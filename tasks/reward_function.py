@@ -165,21 +165,4 @@ class RewardFunction:
             "true_negatives":  true_negatives,
         }
 ```
-
----
-
-## Step 3 — The 3 Graders
-
-Now the graders. These use the stats from `get_episode_stats()` to produce a 0.0–1.0 score.
-
-Before writing them, understand two medical metrics you'll use:
-
-**Sensitivity (Recall)** — of all real emergencies, what fraction did the agent catch?
-```
-sensitivity = true_positives / (true_positives + false_negatives)
-```
-A sensitivity of 1.0 means it caught every emergency. This is the most important metric in medicine — missing emergencies is catastrophic.
-
-**Specificity** — of all stable patients, what fraction did the agent correctly leave alone?
-```
 specificity = true_negatives / (true_negatives + false_positives)
