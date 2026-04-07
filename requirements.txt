@@ -2,3 +2,5 @@ numpy
 pydantic
 openai
 gradio
+pydub
+audioop-lts
