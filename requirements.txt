@@ -4,3 +4,4 @@ openai
 gradio
 pydub
 audioop-lts
+setuptools
