@@ -1,3 +1,14 @@
+---
+title: MediGuard-AI
+emoji: 🏥
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: "4.0.0"
+app_file: app.py
+pinned: false
+---
+
 # 🏥 MediGuard-AI
 
 **An AI-powered ICU patient monitoring system built for the Meta PyTorch OpenEnv Hackathon 2026.**
