@@ -1,350 +1,295 @@
+---
+title: MediGuard-AI
+emoji: 🏥
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: "5.0.0"
+app_file: app.py
+pinned: false
+---
+
 # 🏥 MediGuard-AI
 
-**An AI-powered ICU patient monitoring system built for the Meta PyTorch OpenEnv Hackathon 2026.**
+**An OpenEnv-compliant RL environment for ICU patient monitoring — built for the Meta PyTorch OpenEnv Hackathon 2026.**
 
-MediGuard-AI uses reinforcement learning to teach an AI agent when to raise alarms about ICU patients — learning to catch real emergencies while ignoring false alarms.
-
----
-
-## 🧠 The Simple Explanation
-
-Imagine you're a nurse watching heart monitors for 4 ICU patients at once. Every minute, you see their heart rate, blood pressure, oxygen levels, etc. You have three choices:
-
-| Action | What it means |
-|--------|--------------|
-| **Ignore** | "Everything looks fine, carry on." |
-| **Verify** | "Something seems off, let me take a closer look." |
-| **Alert** | "This is serious — get a doctor NOW!" |
-
-The challenge? Some patients naturally have high blood pressure (it's their normal). Some are walking around (so of course their heart rate is up). A bad AI would panic at every spike. A good AI learns each patient's **personal baseline** and only alerts when something is *genuinely* wrong.
-
-**MediGuard-AI trains an RL agent to make these decisions smartly across 3 scenarios:**
-
-1. **Suppression** (Easy) — A patient with chronically high blood pressure. The AI must learn that 150/95 is *normal for them* and stop crying wolf.
-2. **Deterioration** (Medium) — A patient slowly developing sepsis over 6 hours. Vitals drift so gradually a human might miss it. The AI must catch it early.
-3. **Triage** (Hard) — 4 patients at once. The AI must figure out who actually needs attention and who is fine.
+[![Deployed on HuggingFace Spaces](https://img.shields.io/badge/🤗%20HuggingFace-Spaces-yellow)](https://huggingface.co/spaces)
+[![OpenEnv](https://img.shields.io/badge/OpenEnv-Compliant-blue)](https://github.com/openenv)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green)](https://python.org)
 
 ---
 
-## 📁 Project Structure
+## 🧠 What is MediGuard-AI?
 
-```
-RL Hackathon/
-├── patient_simulator.py     ← Generates realistic patient vital signs
-├── reward_function.py       ← RewardFunction class (action × condition → reward)
-├── task1_suppression.py     ← Easy task grader (false alarm rate)
-├── task2_deterioration.py   ← Medium task grader (detection timing)
-├── task3_triage.py          ← Hard task grader (F1 + masked detection + priority)
-├── mediguard_env.py         ← RL environment (the "game" the AI plays)
-├── inference.py             ← Baseline inference script with structured logs
-├── server.py                ← Gradio server for HF Space deployment
-├── openenv.yaml             ← OpenEnv spec metadata
-├── Dockerfile               ← Container build for HF Spaces
-├── requirements.txt         ← Python dependencies
-├── walkthrough.md           ← Detailed layman-friendly project walkthrough
-└── README.md                ← You are here
-```
+An RL environment where an AI agent monitors ICU patients and must decide — every minute — whether to **Ignore**, **Verify**, or **Alert**. The twist: the same vital sign reading means completely different things depending on what the patient is doing.
+
+| Situation | HR 130 bpm | Correct Action |
+|-----------|-----------|----------------|
+| 🍽️ Patient is eating | Expected | 😴 IGNORE |
+| 🚶 Patient is walking | Possible | 🔍 VERIFY |
+| 🛏️ Patient is resting | DANGER | 🚨 ALERT |
+
+The environment uses **activity-gated rewards** — the novel mechanic that makes this more than a threshold-checking problem. A naive agent that panics at every spike gets penalized. A smart agent that understands context scores high.
 
 ---
 
-## 📄 File 1: `patient_simulator.py`
+## 🎯 Three Tasks (Easy → Hard)
 
-### In Plain English
-This is a **virtual patient**. It generates realistic vital signs (heart rate, blood pressure, oxygen, etc.) that change over time — just like a real ICU patient. It simulates different patient types: healthy, high blood pressure, slowly getting sicker, post-surgery recovery, and unstable.
+### Task 1 — Suppression (Easy)
+A chronically hypertensive patient with baseline BP ~150/95 mmHg. The agent must learn this is *normal for them* and suppress false alarms.
 
-### Technical Details
+**Grader:** F1 harmonic mean of sensitivity × specificity. Pure-IGNORE → 0.0, Pure-ALERT → 0.0. Only a balanced agent scores high.
 
-| Component | Description |
-|-----------|-------------|
-| **Class** | `PatientSimulator` |
-| **Input** | `patient_type` (str), `seed` (int) |
-| **Output** | Vital signs dict with 6 keys |
+### Task 2 — Deterioration (Medium)
+A patient slowly developing sepsis over 6 simulated hours. Temperature rises, BP drops, SpO2 falls — all gradually. The agent must catch the trend early.
 
-**Key methods:**
+**Grader:** Onset-delay scoring — `score = 0.3 + 0.7 × max(0, 1 − delay/20)`. Early detection is rewarded exponentially more. VERIFY alone doesn't count — must escalate to ALERT.
 
-```python
-sim = PatientSimulator(patient_type="healthy", seed=42)
+### Task 3 — Triage (Hard)
+Four concurrent patients: healthy, post-op, deteriorating, healthy. The agent must rank them by urgency and allocate limited attention.
 
-sim.get_vitals()    # → dict with heart_rate, systolic_bp, diastolic_bp, spo2, respiratory_rate, temperature
-sim.get_activity()  # → int: 0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling
-sim.tick()          # Advances time by 1 step, updates all vitals
-sim.get_state()     # → full debug state dict
-sim.reset()         # Resets to initial conditions
-```
-
-**Patient types and their clinical profiles:**
-
-| Type | Baseline BP | Clinical Scenario |
-|------|------------|-------------------|
-| `healthy` | 120/80 | Normal vitals, small random noise |
-| `hypertensive` | 150/95 | Chronically elevated BP (their normal) |
-| `deteriorating` | 118/78 → declining | Slow sepsis drift: temp↑ HR↑ BP↓ SpO2↓ over 360 steps |
-| `post_op` | 100/65 | Low BP, recovering from surgery |
-| `unstable` | 125/82 | Random spikes and drops (10% chance per step) |
-
-**How vitals are generated each tick:**
-1. Fresh baseline values + Gaussian noise
-2. Activity effects applied (walking raises HR, etc.)
-3. Deterioration drift applied (for deteriorating/unstable types)
-4. Smoothing: 70% previous + 30% new (prevents unrealistic jumps)
-5. Clipped to physiological limits (HR: 30–200, SpO2: 70–100, etc.)
+**Grader:** NDCG@4 (50%) + ALERT-F1 (30%) + Responsiveness (20%) − concentration penalty − hesitation penalty. Measures priority *ordering* quality, not just per-patient accuracy.
 
 ---
 
-## 📄 File 2: `mediguard_env.py`
+## 🏗️ Architecture
 
-### In Plain English
-This is the **game board**. It wraps the patient simulator into a standard RL environment. Every "turn," the AI agent sees the patient's vitals and decides: Ignore, Verify, or Alert. The environment scores the decision and moves time forward. After 360 turns (representing 6 hours), the episode ends.
-
-It also tracks the patient's **personal baseline** — a running average of their vitals — so the AI can tell "this is unusual *for this specific patient*" rather than just "this number is high."
-
-### Technical Details
-
-**Class:** `MediGuardEnv` — OpenEnv-compliant with 3 public methods.
-
-```python
-env = MediGuardEnv(task="suppression", seed=42)
-
-obs = env.reset()                          # → observation dict
-obs, reward, done, info = env.step(action) # → (obs, reward, done, info)
-state = env.state()                        # → debug state dict
 ```
-
-**Pydantic Models (OpenEnv spec):**
-- `ObservationModel` — validates observation dict schema
-- `ActionModel` — validates action schema (int or List[int])
-
-**Observation Space — 10 fields per patient:**
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `heart_rate` | float [0,1] | Normalized HR. Raw range: 30–200 bpm |
-| `systolic_bp` | float [0,1] | Normalized systolic BP. Raw: 60–220 mmHg |
-| `diastolic_bp` | float [0,1] | Normalized diastolic BP. Raw: 30–140 mmHg |
-| `spo2` | float [0,1] | Normalized oxygen saturation. Raw: 70–100% |
-| `respiratory_rate` | float [0,1] | Normalized resp rate. Raw: 5–40 breaths/min |
-| `temperature` | float [0,1] | Normalized temp. Raw: 34–42°C |
-| `baseline_delta` | float [0,1] | Mean abs deviation from personal rolling baseline |
-| `hours_observed` | float | `step / 60.0` — how long we've been watching |
-| `activity` | int {0–4} | What the patient is doing right now |
-| `vitals_history` | list [10][6] | Last 10 timesteps of normalized vitals (zero-padded) |
-
-**Normalization formula:**
-```
-normalized = clip((raw - min) / (max - min), 0, 1)
-```
-
-**Action Space:** `Discrete(3)` — `0`=Ignore, `1`=Verify, `2`=Alert
-
-**Task configurations:**
-
-| Task | # Patients | Patient Type(s) | Action Shape | Obs Shape |
-|------|-----------|-----------------|-------------|-----------|
-| `suppression` | 1 | hypertensive | `int` | `dict` |
-| `deterioration` | 1 | deteriorating | `int` | `dict` |
-| `triage` | 4 | healthy, post_op, deteriorating, healthy | `List[int]` len 4 | `List[dict]` len 4 |
-
-**Episode length:** 360 steps (done=True when `step >= 360`)
-
----
-
-## 📄 File 3: `inference.py`
-
-### In Plain English
-This is the **test run**. It plays the game using a rule-based strategy with 3 detection strategies. It runs all 3 tasks, and for each one, it prints detailed logs in the strict format the hackathon's automated scoring system reads.
-
-### Technical Details
-
-**Baseline agent — 3 detection strategies:**
-
-| Strategy | What it catches | How |
-|----------|---------------|-----|
-| **Delta-based** | Sudden changes | `baseline_delta > 0.6` → ALERT, `> 0.35` → VERIFY |
-| **Absolute thresholds** | Slow drift | `spo2 < 0.35` → ALERT, `temp > 0.75` → ALERT |
-| **Trend detection** | Directional change | Compare recent 3 vs oldest 3 vitals in history |
-
-**Mandatory log format:**
-```
-[START] task=suppression env=mediguard model=Qwen/Qwen2.5-72B-Instruct
-[STEP] step=1 action=1 reward=0.66 done=false error=null
-...
-[END] success=true steps=360 score=1.00 rewards=0.66,0.69,...
+mediguard-ai/
+├── patient_simulator.py    # Realistic vital sign generator (5 patient types)
+├── reward_function.py      # Action × Condition × Activity → reward (with fatigue + personalization)
+├── mediguard_env.py        # OpenEnv-compliant RL environment (core)
+├── inference.py            # LLM agent (Qwen 7B/72B) + rule-based fallback + structured logging
+├── app.py                  # Gradio UI: interactive demo + full inference pipeline + API endpoints
+├── task1_suppression.py    # Grader: F1 harmonic mean of sensitivity & specificity
+├── task2_deterioration.py  # Grader: onset-delay scoring with false alarm penalty
+├── task3_triage.py         # Grader: NDCG@4 + ALERT-F1 + responsiveness − penalties
+├── openenv.yaml            # OpenEnv spec metadata
+├── Dockerfile              # Container config for HF Spaces
+└── requirements.txt        # Python dependencies (numpy, pydantic, openai, gradio, pyyaml)
 ```
 
 ---
 
-## 📄 File 4: `server.py`
+## 📋 File-by-File Details
 
-### In Plain English
-This turns the environment into a **web app** that can run on HuggingFace Spaces. It provides both an interactive UI and API endpoints.
+### `patient_simulator.py`
+Generates realistic ICU vital signs for 5 patient types: healthy, hypertensive, post-op, deteriorating, and custom. Simulates activity cycles (resting → eating → walking → distressed → falling) and sepsis-like drift with configurable severity. Pure data generator — no decision logic.
 
-### Technical Details
-Gradio app with interactive buttons and API endpoints:
+### `reward_function.py`
+Maps `(action × condition × activity)` → reward signal. Key features:
+- **Activity context multipliers** — the core mechanic. Penalties are discounted during high-activity states (walking ×0.50, eating ×0.40) and amplified during dangerous activities (distressed ×1.25, falling ×1.60). Resting is baseline ×1.0.
+- **Alarm fatigue modifier** — >5 alerts in last 30 steps → reward reduced to 0.6×
+- **Personalization bonus** — correctly ignoring a stable patient after step 200 → +0.2 bonus
+- Tracks `action_history`, `condition_history`, and `activity_history` for grader use
 
-| Function | What it does |
-|----------|-------------|
-| Reset button | Reset env with selected task and seed |
-| Step button | Take action, see observation and reward |
-| `/api/reset_env` | API: reset environment |
-| `/api/step_env` | API: take a step |
-| `/api/get_state` | API: get current state |
-| `/api/health_check` | API: health check |
+**Updated reward table:**
+```
+             | STABLE | BORDERLINE | EMERGENCY | DRUG_MASKED |
+ALERT        |  -0.5  |    +0.2    |   +1.0    |    +1.0     |
+VERIFY       |  -0.1  |    +0.7    |   +0.3    |    +0.3     |
+IGNORE       |  +0.2  |    -0.2    |   -1.0    |    -1.0     |
+```
+
+### `mediguard_env.py`
+OpenEnv-compliant environment with `reset() → obs`, `step(action) → (obs, reward, done, info)`, `state() → dict`. Contains:
+- **3 Pydantic models**: `ObservationModel`, `ActionModel`, `RewardModel` (required by OpenEnv spec)
+- **`_PatientTracker`** — per-patient rolling baseline and vitals history
+- **`_classify_condition()`** — maps continuous vitals to discrete `PatientCondition` enum using deterioration severity + vital thresholds
+- **Reward normalization** — raw range `[-1.6, 1.6]` mapped to `[0.0, 1.0]`
+- **Grader delegation** — `false_alarm_rate_grader()`, `deterioration_grader()`, `triage_grader()` call external grader modules
+
+### `inference.py`
+LLM-based agent using OpenAI-compatible API (HuggingFace router). Key features:
+- **Per-task model selection**: Suppression → `Qwen/Qwen2.5-7B-Instruct` (cheap), Deterioration/Triage → `Qwen/Qwen2.5-72B-Instruct` (powerful)
+- **Task-specific system prompts** — tuned for each grader's scoring criteria
+- **Vitals trend table** — last 8 readings formatted for deterioration detection
+- **Conversation history** — sliding window of 4 turns with reward feedback for pseudo-online-learning
+- **Triage: single API call** — all 4 patients in one prompt, output `{"actions": [2,0,1,0]}`
+- **Graceful fallback** — falls back to rule-based `baseline_agent()` on any API error (timeout, rate limit, parse error)
+- **Structured logging** — `[START]`, `[STEP]`, `[END]`, `[FALLBACK]`, `[REASONING]`, `[SUMMARY]` lines
+
+**Environment variables:**
+```
+HF_TOKEN / OPENAI_API_KEY / API_KEY   — authentication (checked in priority order)
+API_BASE_URL                           — LLM endpoint (default: HuggingFace router)
+MODEL_NAME                             — model ID (default: Qwen/Qwen2.5-72B-Instruct)
+```
+
+### `app.py`
+Gradio-based UI for HuggingFace Spaces with:
+- **Interactive demo tab** — reset env, pick agent mode (LLM / Rule-Based / Manual), step through episodes, live vitals monitor with risk tags
+- **How It Works tab** — visual explanation of the insight, scoring formulas, LLM architecture
+- **3 agent modes**: LLM Agent (real API calls), Rule-Based (baseline_agent), Manual (user picks actions)
+- **Full inference pipeline** — runs `python inference.py` end-to-end and streams output
+- **API endpoints** — `reset_env`, `step_env`, `get_state`, `health_check` exposed via Gradio API
+- Dark vitals display with raw+normalized values
+
+### `task1_suppression.py`
+**F1 harmonic mean** of sensitivity and specificity:
+- ALERT on emergency = full true positive
+- VERIFY on emergency = 0.5 TP (must commit to ALERT for full credit)
+- VERIFY on stable = 0.7 FP (spamming VERIFY is penalized)
+- Pure-IGNORE → sensitivity=0 → F1=**0.0** (can't cheat)
+- Expected scores: rule-based ~0.50, LLM ~0.80
+
+### `task2_deterioration.py`
+**Onset-delay scoring** with strict escalation requirement:
+- Finds deterioration episodes (≥5 consecutive non-STABLE steps)
+- Score per episode: `0.3 + 0.7 × max(0, 1 − delay/20)`
+- VERIFY alone does NOT count — must escalate to ALERT
+- False alarm penalty kicks in at 8% FAR, capped at 0.40
+- Expected scores: rule-based ~0.39, LLM ~0.75
+
+### `task3_triage.py`
+**NDCG@4 + F1 + Responsiveness − penalties:**
+- NDCG@4 (50%) — measures priority ordering quality across 4 patients
+- ALERT-F1 (30%) — only ALERT counts as true positive for emergencies
+- Responsiveness (20%) — how quickly agent adapts to condition changes
+- Concentration penalty — spamming same action to all patients is penalized
+- Hesitation penalty — VERIFY on EMERGENCY patients is explicitly penalized
+- Expected scores: rule-based ~0.22, LLM ~0.65
+
+### `openenv.yaml`
+OpenEnv spec metadata pointing to:
+- `env_module: mediguard_env`, `env_class: MediGuardEnv`
+- Pydantic models: `ObservationModel`, `ActionModel`, `RewardModel`
+- `inference_script: inference.py`, `app: app.py`
+- 3 tasks with grader references matching env methods
+
+### `Dockerfile`
+`python:3.11-slim` based container. Copies all source files and launches `app.py` on port 7860.
+
+### `requirements.txt`
+Minimal dependencies — only what the code actually imports:
+```
+numpy       — vital sign simulation + normalization
+pydantic    — OpenEnv schema validation (ObservationModel, ActionModel, RewardModel)
+openai      — LLM client (HuggingFace router compatible)
+gradio      — UI + API server
+pyyaml      — openenv.yaml validation in inference.py
+```
 
 ---
 
-## 📄 File 5: `reward_function.py`
+## 🔬 Environment Spec
 
-### In Plain English
-This tells the AI "good job" or "bad job" after every decision, based on a reward table that maps each action to each patient condition.
+**Observation Space** — 10 fields per patient:
 
-### Technical Details
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `heart_rate` | float | 0–1 | Normalized HR (30–200 bpm) |
+| `systolic_bp` | float | 0–1 | Normalized systolic BP (60–220 mmHg) |
+| `diastolic_bp` | float | 0–1 | Normalized diastolic BP (30–140 mmHg) |
+| `spo2` | float | 0–1 | Normalized SpO2 (70–100%) |
+| `respiratory_rate` | float | 0–1 | Normalized RR (5–40 bpm) |
+| `temperature` | float | 0–1 | Normalized temp (34–42°C) |
+| `baseline_delta` | float | 0–1 | Rolling deviation from personal baseline |
+| `hours_observed` | float | ≥0 | Elapsed time (step / 60) |
+| `activity` | int | 0–4 | 0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling |
+| `vitals_history` | list | [10][6] | Last 10 timesteps of normalized vitals |
 
-**Base reward table:**
-
-| | Emergency 🚨 | Borderline ⚠️ | Stable ✅ | Drug-Masked 💊 |
-|---|---|---|---|---|
-| **Alert** | +1.0 | +0.2 | -0.5 | +1.0 |
-| **Verify** | -0.8 | +0.4 | +0.1 | -0.5 |
-| **Ignore** | -2.0 | -0.1 | +0.2 | -2.0 |
-
-**Modifiers:**
-- **Alarm fatigue**: >5 alerts in last 30 steps → reward × 0.6
-- **Personalization bonus**: After 200 steps, IGNORE + STABLE → +0.2 bonus
-
----
-
-## 📄 Files 6-8: Task Graders
-
-| Grader | File | Scoring Method |
-|--------|------|---------------|
-| `false_alarm_rate_grader` | `task1_suppression.py` | False alarm rate: <5% → 1.0, >60% → 0.0 |
-| `deterioration_grader` | `task2_deterioration.py` | Two-phase: VERIFY early (0.3) + ALERT on time (0.7) |
-| `triage_grader` | `task3_triage.py` | 50% F1 + 30% masked detection + 20% priority |
+**Action Space:** `Discrete(3)` — 0=Ignore, 1=Verify, 2=Alert
+**Episode Length:** 360 steps (6 simulated hours)
+**Reward:** Normalized to [0.0, 1.0]; shaped by activity context + alarm fatigue + personalization
+**Seed:** 42 (reproducible)
 
 ---
 
-## 🚀 How to Run
+## 🚀 Quick Start
 
-### 1. Install dependencies
+### Run locally
 
 ```bash
+git clone <your-repo>
+cd mediguard-ai
 pip install -r requirements.txt
-```
 
-### 2. Smoke-test the environment (5 steps per task)
+# Set your HuggingFace token for LLM agent
+export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxx"
 
-```bash
-python mediguard_env.py
-```
+# Launch Gradio UI
+python app.py
 
-### 3. Run the full baseline inference (360 steps × 3 tasks)
-
-```bash
+# Run LLM inference across all 3 tasks
 python inference.py
 ```
 
-### 4. Run the server locally
+### Use the environment in Python
 
-```bash
-python server.py
+```python
+from mediguard_env import MediGuardEnv
+
+# Single patient task
+env = MediGuardEnv(task="suppression", seed=42)
+obs = env.reset()
+
+while True:
+    action = 1  # Verify
+    obs, reward, done, info = env.step(action)
+    if done:
+        break
+
+score = env.false_alarm_rate_grader()
+print(f"Suppression score: {score:.4f}")
+
+# Triage (4 patients)
+env = MediGuardEnv(task="triage", seed=42)
+obs = env.reset()  # returns list of 4 observation dicts
+
+obs, reward, done, info = env.step([1, 0, 2, 0])  # per-patient actions
+score = env.triage_grader()
 ```
 
-Then open: `http://localhost:7860`
+### API Endpoints (Gradio)
 
-### 5. Docker build & run
-
-```bash
-docker build -t mediguard-ai .
-docker run -p 7860:7860 mediguard-ai
-```
+| Endpoint | Input | Description |
+|----------|-------|-------------|
+| `/api/reset_env` | `task` (str), `seed` (int) | Reset environment |
+| `/api/step_env` | `action` (str or `"1,0,2,0"`) | Take one step |
+| `/api/get_state` | — | Current environment state |
+| `/api/health_check` | — | Liveness check |
 
 ---
 
-## 📊 Baseline Scores
+## 📊 Expected Scores
 
-| Task | Difficulty | Score | How |
-|------|-----------|-------|-----|
-| Suppression | ⭐ Easy | **1.00** | Zero false alarms on hypertensive patient |
-| Deterioration | ⭐⭐ Medium | **0.80** | Detected sepsis via SpO2/temp trends |
-| Triage | ⭐⭐⭐ Hard | **0.40** | Rule-based baseline; trained agent would score higher |
+| Task | Random Agent | Rule-Based | LLM Agent | Perfect |
+|------|:-----------:|:----------:|:---------:|:-------:|
+| Suppression | ~0.33 | ~0.50 | ~0.80 | 1.0 |
+| Deterioration | ~0.33 | ~0.39 | ~0.75 | 1.0 |
+| Triage | ~0.33 | ~0.22 | ~0.65 | 1.0 |
 
-> For a detailed explanation of every file and concept, see **walkthrough.md**
+These are honest scores — the graders are specifically designed so that:
+1. Pure-IGNORE and Pure-ALERT both score ~0.0 (no cheating)
+2. Rule-based agents score moderately (can't game the graders)
+3. LLM agents show clear improvement (activity context reasoning)
+4. Trained RL agents have room to improve further
 
 ---
 
-## 🏗️ Architecture Diagram
+## 🐳 Docker / HF Spaces
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    inference.py                          │
-│  ┌────────────┐    ┌───────────────────────────────┐    │
-│  │  Baseline   │───▶│       MediGuardEnv            │    │
-│  │   Agent     │◀───│  (mediguard_env.py)           │    │
-│  │             │    │                               │    │
-│  │ 3 Strategies│    │  • Normalizes vitals 0–1      │    │
-│  │ • Delta     │    │  • Tracks personal baseline   │    │
-│  │ • Absolute  │    │  • Keeps 10-step history      │    │
-│  │ • Trends    │    │  • Classifies condition       │    │
-│  │             │    │  • Computes reward via RF      │    │
-│  └────────────┘    │  • Manages 360-step episodes  │    │
-│                     │                               │    │
-│  ┌────────────┐    │  ┌───────────────────────┐    │    │
-│  │  OpenAI    │    │  │  PatientSimulator     │    │    │
-│  │  Client    │    │  │  (patient_simulator)  │    │    │
-│  │ (ready for │    │  │                       │    │    │
-│  │  LLM agent)│    │  │  Generates vitals     │    │    │
-│  └────────────┘    │  └───────────────────────┘    │    │
-│                     │                               │    │
-│                     │  ┌───────────────────────┐    │    │
-│                     │  │  RewardFunction       │    │    │
-│                     │  │  (reward_function.py)  │    │    │
-│                     │  │  + Task Graders       │    │    │
-│                     │  └───────────────────────┘    │    │
-│                     └───────────────────────────────┘    │
-│                                                          │
-│  Output: [START] / [STEP] / [END] logs                   │
-└─────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│  server.py (Gradio)           │  openenv.yaml           │
-│  Interactive UI + API         │  Metadata + task defs   │
-│  Served via Dockerfile        │                         │
-└─────────────────────────────────────────────────────────┘
+The app auto-detects its environment:
+- HuggingFace Spaces or Docker → binds to `0.0.0.0:7860`
+- Local development → binds to `127.0.0.1:7860`
+
+```dockerfile
+FROM python:3.11-slim
+# Copies all source files and launches app.py on port 7860
 ```
 
 ---
 
-## ✅ Hackathon Checklist
+## 🏆 Hackathon Context
 
-| Requirement | Status |
-|------------|--------|
-| Real-world task simulation (ICU monitoring) | ✅ Done |
-| OpenEnv spec: typed Pydantic models | ✅ Done |
-| OpenEnv spec: `step()` / `reset()` / `state()` | ✅ Done |
-| `openenv.yaml` with metadata | ✅ Done |
-| 3 tasks (easy → medium → hard) | ✅ Done |
-| Agent graders (0.0–1.0 scores) | ✅ Done |
-| Meaningful reward function (varying signal) | ✅ Done |
-| Alarm fatigue modifier + personalization bonus | ✅ Done |
-| Baseline `inference.py` with reproducible scores | ✅ Done |
-| Structured stdout: `[START]` / `[STEP]` / `[END]` | ✅ Done |
-| OpenAI client for LLM calls | ✅ Done |
-| Environment variables: `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN` | ✅ Done |
-| `Dockerfile` builds | ✅ Done |
-| Gradio server on port 7860 | ✅ Done |
-| `requirements.txt` | ✅ Done |
-| Runs on vcpu=2, 8GB RAM, no GPU | ✅ Done |
-| Completes in under 20 minutes | ✅ Done |
-| `seed=42` reproducible | ✅ Done |
-| Deploy to HuggingFace Spaces | 🔜 Pending |
+Built for the **Meta PyTorch OpenEnv Hackathon 2026** (India), organized by Scaler School of Technology in collaboration with Meta, Hugging Face, and PyTorch.
+
+- **Theme:** Real RL infrastructure, not just demos
+- **Framework:** Meta's OpenEnv
+- **Finale:** 48-hour in-person hackathon, Bangalore, April 25–26 2026
+- **Prize pool:** $30,000 + interview opportunities at Meta & Hugging Face
 
 ---
 
-## 📋 Constraints & Requirements
-
-- **Hardware:** vcpu=2, 8GB RAM — no GPU required
-- **Runtime:** Must complete all 3 tasks in under 20 minutes
-- **Reproducibility:** `seed=42` must produce identical output every run
-- **Python version:** 3.9+
-- **Dependencies:** `numpy`, `pydantic`, `openai`, `gradio`
+*MediGuard-AI — because missing a deteriorating patient is not an option.*

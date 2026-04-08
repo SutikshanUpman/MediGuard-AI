@@ -41,7 +41,7 @@ class ObservationModel(BaseModel):
 
 class ActionModel(BaseModel):
     """Schema for an action.
-    
+
     For suppression / deterioration: a single int in {0,1,2}.
     For triage: a list of 4 ints, each in {0,1,2}.
     """
@@ -49,6 +49,22 @@ class ActionModel(BaseModel):
         ...,
         description="0=Ignore, 1=Verify, 2=Alert. List[int] of length 4 for triage."
     )
+
+
+class RewardModel(BaseModel):
+    """Schema for the reward signal returned by step()."""
+    reward: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Normalized reward in [0, 1]. "
+            "Reflects correctness of the agent's action given current patient condition. "
+            "1.0 = optimal action, 0.0 = worst possible action."
+        ),
+    )
+    done: bool = Field(..., description="True if the episode has ended (step >= 360).")
+    step: int = Field(..., ge=0, description="Current step number within the episode.")
 
 
 # ------------------------------------------------------------------ #
@@ -88,7 +104,7 @@ HISTORY_LEN = 10         # Number of past timesteps kept in vitals_history
 
 
 # ------------------------------------------------------------------ #
-#  Helper: per-patient observation tracker                            #
+#  Helper: per-patient observation tracker                           #
 # ------------------------------------------------------------------ #
 
 class _PatientTracker:
@@ -344,7 +360,7 @@ class MediGuardEnv:
     # -------------------------------------------------------------- #
 
     def _compute_reward(self, action, obs) -> float:
-        """Compute reward using the RewardFunction with condition classification."""
+        """Compute reward using the RewardFunction with condition + activity context."""
         if self._is_triage:
             # Multi-patient: average reward across patients
             rewards = []
@@ -353,18 +369,20 @@ class MediGuardEnv:
                 zip(actions, self._trackers, self._reward_fns)
             ):
                 condition = self._classify_condition(tracker)
+                activity = tracker.sim.get_activity()
                 action_enum = Action(act)
-                r = rf.compute(action_enum, condition)
+                r = rf.compute(action_enum, condition, activity=activity)
                 rewards.append(r)
             raw_reward = sum(rewards) / len(rewards)
         else:
             # Single patient
             condition = self._classify_condition(self._trackers[0])
+            activity = self._trackers[0].sim.get_activity()
             action_enum = Action(action)
-            raw_reward = self._reward_fns[0].compute(action_enum, condition)
+            raw_reward = self._reward_fns[0].compute(action_enum, condition, activity=activity)
 
-        # Normalize to [0, 1]: raw range is [-2.0, 1.2]
-        normalized = (raw_reward + 2.0) / 3.2
+        # Normalize to [0, 1]: raw range is [-1.6, 1.6]
+        normalized = (raw_reward + 1.6) / 3.2
         return max(0.0, min(1.0, normalized))
 
     # -------------------------------------------------------------- #
@@ -406,14 +424,13 @@ if __name__ == "__main__":
 
         for s in range(1, 6):
             if task == "triage":
-                action = [1, 0, 1, 0]     # sample multi-patient action
+                action = [1, 0, 1, 0]
             else:
-                action = 1                 # Verify
+                action = 1  # Verify
 
             obs, reward, done, info = env.step(action)
 
             if task == "triage":
-                # Print summary for patient 0
                 p0 = obs[0]
                 print(
                     f"  step {s} | reward={reward:.2f} | done={done} | "

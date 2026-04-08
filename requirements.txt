@@ -2,3 +2,4 @@ numpy
 pydantic
 openai
 gradio
+pyyaml

@@ -15,7 +15,7 @@ COPY task2_deterioration.py .
 COPY task3_triage.py .
 COPY mediguard_env.py .
 COPY inference.py .
-COPY server.py .
+COPY app.py .
 COPY openenv.yaml .
 COPY README.md .
 
@@ -23,4 +23,4 @@ COPY README.md .
 EXPOSE 7860
 
 # Run the Gradio app
-CMD ["python", "server.py"]
+CMD ["python", "app.py"]
