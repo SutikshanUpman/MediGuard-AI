@@ -1,6 +1,6 @@
 """
 MediGuard-AI — HuggingFace Spaces App
-Game-style bright UI. Clean. Readable. No ulti vibes.
+FastAPI (REST endpoints for OpenEnv validator) + Gradio (interactive UI)
 """
 
 import json
@@ -8,6 +8,10 @@ import os
 import sys
 
 import gradio as gr
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import uvicorn
+
 from mediguard_env import MediGuardEnv
 from inference import (
     baseline_agent, triage_baseline,
@@ -49,7 +53,7 @@ if _llm_available:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Observation formatting  — clean, no tick symbols
+#  Observation formatting
 # ══════════════════════════════════════════════════════════════════
 
 def _risk_tag(delta, spo2, temp):
@@ -147,7 +151,7 @@ def _compute_score(env, task):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Demo functions
+#  Demo functions (Gradio callbacks)
 # ══════════════════════════════════════════════════════════════════
 
 def demo_reset(task, seed, agent_mode):
@@ -298,60 +302,26 @@ def on_task_change(task, agent_mode):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  API wrappers
-# ══════════════════════════════════════════════════════════════════
-
-def reset_env(task="suppression", seed=42):
-    global _env, _current_task, _last_obs
-    _env = MediGuardEnv(task=task, seed=int(seed))
-    _current_task = task
-    obs = _env.reset()
-    _last_obs = obs
-    return json.dumps({"observation": obs, "info": {"task": task, "seed": seed}}, default=str)
-
-def step_env(action: str):
-    if _env is None: return json.dumps({"error": "reset first"})
-    try:
-        parsed = [int(a.strip()) for a in action.split(",")] if "," in action else int(action)
-        obs, rew, done, info = _env.step(parsed)
-        return json.dumps({"observation": obs, "reward": rew, "done": done, "info": info}, default=str)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-def get_state():
-    if _env is None: return json.dumps({"error": "reset first"})
-    return json.dumps(_env.state(), default=str)
-
-def health_check():
-    return json.dumps({"status": "ok", "llm_available": _llm_available})
-
-
-# ══════════════════════════════════════════════════════════════════
-#  CSS — FIXED: no Google Fonts import (blocked by HF CSP)
-#         Using system font stacks that match the original look
+#  CSS — fixed for both HF Spaces and localhost
+#  Key fix: avoid --bg/:root vars that HF Spaces theme overrides.
+#  Use explicit hex values on every rule so HF dark injection can't win.
 # ══════════════════════════════════════════════════════════════════
 
 CSS = """
-:root {
-    --bg:      #f0f4ff;
-    --bg2:     #ffffff;
-    --bg3:     #e8edf8;
-    --border:  #d0d8f0;
-    --text:    #1a1f3a;
-    --muted:   #6b7280;
-    --blue:    #2563eb;
-    --green:   #16a34a;
-    --amber:   #d97706;
-    --red:     #dc2626;
-    --mono:    'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace;
-    --display: 'Rajdhani', 'Segoe UI', system-ui, -apple-system, sans-serif;
-    --body:    'Nunito', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Nunito:wght@400;600;700;800&display=swap');
+
+/* ── FORCE LIGHT BASE — prevents HF dark-mode override ── */
+html, body,
+.gradio-container,
+.gradio-container * {
+    color-scheme: light !important;
 }
 
-body, .gradio-container {
-    background: var(--bg) !important;
-    font-family: var(--body) !important;
-    color: var(--text) !important;
+body,
+.gradio-container {
+    background: #f0f4ff !important;
+    font-family: 'Nunito', sans-serif !important;
+    color: #1a1f3a !important;
 }
 
 /* HEADER */
@@ -373,74 +343,76 @@ body, .gradio-container {
     border-radius: 50%;
 }
 .app-header h1 {
-    font-family: var(--display);
+    font-family: 'Rajdhani', sans-serif;
     font-size: 2.5em;
     font-weight: 700;
-    color: #fff;
+    color: #ffffff !important;
     margin: 0 0 5px;
     letter-spacing: 1px;
 }
-.app-header .tagline { color: rgba(255,255,255,0.7); font-size: 0.9em; margin: 0 0 18px; }
+.app-header .tagline { color: rgba(255,255,255,0.75) !important; font-size: 0.9em; margin: 0 0 18px; }
+
 .pill {
     display: inline-block;
     border-radius: 30px;
     padding: 4px 13px;
     font-size: 0.75em;
     font-weight: 700;
-    font-family: var(--mono);
+    font-family: 'JetBrains Mono', monospace;
     margin: 0 5px 0 0;
     letter-spacing: 0.5px;
 }
-.p-white  { background: rgba(255,255,255,0.18); color: #fff; }
-.p-green  { background: #dcfce7; color: #15803d; }
-.p-yellow { background: #fef9c3; color: #a16207; }
-.p-red    { background: #fee2e2; color: #b91c1c; }
-.p-llm-on  { background: #dcfce7; color: #15803d; }
-.p-llm-off { background: #fee2e2; color: #b91c1c; }
-
-/* METRIC STRIP */
-.gr-textbox { font-family: var(--body) !important; }
+.p-white  { background: rgba(255,255,255,0.18); color: #ffffff !important; }
+.p-green  { background: #dcfce7; color: #15803d !important; }
+.p-yellow { background: #fef9c3; color: #a16207 !important; }
+.p-red    { background: #fee2e2; color: #b91c1c !important; }
+.p-llm-on  { background: #dcfce7; color: #15803d !important; }
+.p-llm-off { background: #fee2e2; color: #b91c1c !important; }
 
 /* STATUS BAR */
-.status-bar textarea {
+.status-bar textarea,
+.status-bar input {
     background: #1e3a8a !important;
     border: 2px solid #3b82f6 !important;
     border-radius: 12px !important;
-    font-family: var(--mono) !important;
+    font-family: 'JetBrains Mono', monospace !important;
     font-size: 0.87em !important;
     font-weight: 600 !important;
     color: #bfdbfe !important;
 }
 
-/* VITALS */
-.vitals-box textarea {
+/* VITALS MONITOR */
+.vitals-box textarea,
+.vitals-box input {
     background: #0f172a !important;
     border: 2px solid #2563eb !important;
     border-radius: 14px !important;
-    font-family: var(--mono) !important;
+    font-family: 'JetBrains Mono', monospace !important;
     font-size: 0.92em !important;
     font-weight: 500 !important;
     color: #e0f2fe !important;
     line-height: 1.8 !important;
 }
 
-/* LOG */
-.log-box textarea {
+/* EPISODE LOG */
+.log-box textarea,
+.log-box input {
     background: #f8fafc !important;
     border: 2px solid #cbd5e1 !important;
     border-radius: 14px !important;
-    font-family: var(--mono) !important;
+    font-family: 'JetBrains Mono', monospace !important;
     font-size: 0.8em !important;
     color: #334155 !important;
     line-height: 1.6 !important;
 }
 
 /* FULL LOG */
-.full-log textarea {
+.full-log textarea,
+.full-log input {
     background: #fffbeb !important;
     border: 2px solid #fde047 !important;
     border-radius: 14px !important;
-    font-family: var(--mono) !important;
+    font-family: 'JetBrains Mono', monospace !important;
     font-size: 0.8em !important;
     color: #78350f !important;
     line-height: 1.6 !important;
@@ -450,8 +422,8 @@ body, .gradio-container {
 .btn-reset {
     background: linear-gradient(135deg,#1d4ed8,#4f46e5) !important;
     border: none !important; border-radius: 12px !important;
-    font-family: var(--display) !important; font-size: 1.05em !important;
-    font-weight: 700 !important; color: #fff !important; letter-spacing: 0.5px !important;
+    font-family: 'Rajdhani', sans-serif !important; font-size: 1.05em !important;
+    font-weight: 700 !important; color: #ffffff !important; letter-spacing: 0.5px !important;
     box-shadow: 0 4px 16px rgba(79,70,229,.4) !important;
     transition: all .2s !important;
 }
@@ -460,8 +432,8 @@ body, .gradio-container {
 .btn-step {
     background: linear-gradient(135deg,#059669,#10b981) !important;
     border: none !important; border-radius: 12px !important;
-    font-family: var(--display) !important; font-size: 1.05em !important;
-    font-weight: 700 !important; color: #fff !important; letter-spacing: 0.5px !important;
+    font-family: 'Rajdhani', sans-serif !important; font-size: 1.05em !important;
+    font-weight: 700 !important; color: #ffffff !important; letter-spacing: 0.5px !important;
     box-shadow: 0 4px 16px rgba(16,185,129,.35) !important;
     transition: all .2s !important;
 }
@@ -470,67 +442,86 @@ body, .gradio-container {
 .btn-run {
     background: linear-gradient(135deg,#b45309,#d97706) !important;
     border: none !important; border-radius: 12px !important;
-    font-family: var(--display) !important; font-size: 1em !important;
-    font-weight: 700 !important; color: #fff !important;
+    font-family: 'Rajdhani', sans-serif !important; font-size: 1em !important;
+    font-weight: 700 !important; color: #ffffff !important;
     box-shadow: 0 4px 14px rgba(217,119,6,.3) !important;
 }
 
 /* SECTION HEADING */
 .sec-h {
-    font-family: var(--display);
+    font-family: 'Rajdhani', sans-serif;
     font-size: 1.1em;
     font-weight: 700;
-    color: var(--text);
-    border-left: 4px solid var(--blue);
+    color: #1a1f3a !important;
+    border-left: 4px solid #2563eb;
     padding-left: 10px;
     margin: 14px 0 8px;
 }
 
-/* Inputs & dropdowns */
-.gradio-container input, .gradio-container select,
-.gradio-container .svelte-1gfkn6j {
-    font-family: var(--body) !important;
-    border: 2px solid var(--border) !important;
+/* ALL INPUTS / DROPDOWNS — force light bg */
+.gradio-container label,
+.gradio-container .label-wrap span,
+.gradio-container .block {
+    color: #1a1f3a !important;
+}
+.gradio-container input,
+.gradio-container select,
+.gradio-container textarea {
+    font-family: 'Nunito', sans-serif !important;
+    border: 2px solid #d0d8f0 !important;
     border-radius: 10px !important;
-    background: var(--bg2) !important;
-    color: var(--text) !important;
+    background: #ffffff !important;
+    color: #1a1f3a !important;
+}
+/* Dropdown panel */
+.gradio-container .options,
+.gradio-container ul.options {
+    background: #ffffff !important;
+    border: 2px solid #d0d8f0 !important;
+    color: #1a1f3a !important;
+}
+.gradio-container ul.options li:hover {
+    background: #eff6ff !important;
 }
 
-/* Tabs */
-.tab-nav { border-bottom: 2px solid var(--border) !important; }
+/* TABS */
+.tab-nav { border-bottom: 2px solid #d0d8f0 !important; }
 .tab-nav button {
-    font-family: var(--display) !important; font-weight: 600 !important;
-    font-size: 1em !important; color: var(--muted) !important;
+    font-family: 'Rajdhani', sans-serif !important; font-weight: 600 !important;
+    font-size: 1em !important; color: #6b7280 !important;
+    background: transparent !important;
 }
-.tab-nav button.selected { color: var(--blue) !important; border-bottom: 2px solid var(--blue) !important; }
+.tab-nav button.selected {
+    color: #2563eb !important;
+    border-bottom: 2px solid #2563eb !important;
+}
 
-/* Radio button selected state */
+/* RADIO BUTTONS */
 .gradio-container .wrap .wrap-inner label {
-    border: 2px solid var(--border) !important;
+    border: 2px solid #d0d8f0 !important;
     border-radius: 10px !important;
     padding: 6px 14px !important;
     transition: all 0.15s ease !important;
     cursor: pointer !important;
-    background: var(--bg2) !important;
-    color: var(--muted) !important;
-    font-family: var(--body) !important;
+    background: #ffffff !important;
+    color: #6b7280 !important;
+    font-family: 'Nunito', sans-serif !important;
     font-weight: 600 !important;
 }
 .gradio-container .wrap .wrap-inner label:hover {
-    border-color: var(--blue) !important;
+    border-color: #2563eb !important;
     background: #eff6ff !important;
-    color: var(--blue) !important;
+    color: #2563eb !important;
 }
 .gradio-container .wrap .wrap-inner label:has(input[type="radio"]:checked) {
-    background: var(--blue) !important;
-    border-color: var(--blue) !important;
+    background: #2563eb !important;
+    border-color: #2563eb !important;
     color: #ffffff !important;
     box-shadow: 0 2px 10px rgba(37,99,235,0.35) !important;
 }
 .gradio-container .wrap .wrap-inner label input[type="radio"] {
     accent-color: #ffffff !important;
-    width: 14px !important;
-    height: 14px !important;
+    width: 14px !important; height: 14px !important;
 }
 .gradio-container .wrap .wrap-inner label:has(input[type="radio"]:checked):first-child {
     background: linear-gradient(135deg, #059669, #10b981) !important;
@@ -543,19 +534,19 @@ body, .gradio-container {
     box-shadow: 0 2px 10px rgba(180,83,9,0.35) !important;
 }
 
-/* How it works cards */
+/* HOW-IT-WORKS CARDS */
 .hw-card {
-    background: var(--bg2);
-    border: 2px solid var(--border);
+    background: #ffffff !important;
+    border: 2px solid #d0d8f0;
     border-radius: 16px;
     padding: 22px 26px;
     margin-bottom: 14px;
 }
 .hw-card h3 {
-    font-family: var(--display);
+    font-family: 'Rajdhani', sans-serif;
     font-size: 1.2em;
     font-weight: 700;
-    color: var(--blue);
+    color: #2563eb !important;
     margin: 0 0 14px;
 }
 .score-block {
@@ -563,13 +554,21 @@ body, .gradio-container {
     padding: 14px 18px;
     margin-bottom: 10px;
 }
-.sb-g { background: #dcfce7; border-left: 5px solid #16a34a; }
-.sb-y { background: #fef9c3; border-left: 5px solid #d97706; }
-.sb-r { background: #fee2e2; border-left: 5px solid #dc2626; }
+.sb-g { background: #dcfce7 !important; border-left: 5px solid #16a34a; }
+.sb-y { background: #fef9c3 !important; border-left: 5px solid #d97706; }
+.sb-r { background: #fee2e2 !important; border-left: 5px solid #dc2626; }
+
+/* MARKDOWN text inside blocks */
+.gradio-container .prose p,
+.gradio-container .prose li,
+.gradio-container .prose td,
+.gradio-container .prose th {
+    color: #1a1f3a !important;
+}
 
 ::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: var(--bg3); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-track { background: #e8edf8; }
+::-webkit-scrollbar-thumb { background: #d0d8f0; border-radius: 3px; }
 """
 
 # ══════════════════════════════════════════════════════════════════
@@ -604,9 +603,9 @@ HOW_INSIGHT_HTML = """
   </p>
   <table style="width:100%;border-collapse:collapse;font-size:0.9em">
     <tr style="border-bottom:2px solid #e5e7eb">
-      <th style="text-align:left;padding:8px 6px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">Situation</th>
-      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">HR 130 bpm</th>
-      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">Correct Action</th>
+      <th style="text-align:left;padding:8px 6px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">Situation</th>
+      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">HR 130 bpm</th>
+      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">Correct Action</th>
     </tr>
     <tr style="border-bottom:1px solid #f3f4f6">
       <td style="padding:10px 6px">🍽 Patient is eating</td>
@@ -664,8 +663,28 @@ SCORING_HTML = f"""
 with gr.Blocks(
     title="MediGuard-AI — ICU Monitoring",
     css=CSS,
-    theme=gr.themes.Base(),
-) as app:
+    theme=gr.themes.Base(
+        primary_hue=gr.themes.colors.blue,
+        secondary_hue=gr.themes.colors.indigo,
+        neutral_hue=gr.themes.colors.slate,
+        font=[gr.themes.GoogleFont("Nunito"), "sans-serif"],
+        font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "monospace"],
+    ).set(
+        body_background_fill="#f0f4ff",
+        body_text_color="#1a1f3a",
+        background_fill_primary="#ffffff",
+        background_fill_secondary="#f0f4ff",
+        border_color_primary="#d0d8f0",
+        color_accent="#2563eb",
+        color_accent_soft="#eff6ff",
+        block_background_fill="#ffffff",
+        block_border_color="#d0d8f0",
+        block_label_text_color="#1a1f3a",
+        input_background_fill="#ffffff",
+        input_border_color="#d0d8f0",
+        input_placeholder_color="#9ca3af",
+    ),
+) as gradio_app:
 
     gr.HTML(HEADER_HTML)
 
@@ -847,21 +866,107 @@ System Prompt (task rules + thresholds)
     task_dd.change(on_task_change, [task_dd, agent_radio], [single_action_row, triage_action_row])
     run_all_btn.click(demo_run_all, [agent_radio], [full_log])
 
-    # Hidden API wrappers
-    with gr.Row(visible=False):
-        _t  = gr.Textbox(value="suppression")
-        _s  = gr.Number(value=42)
-        _ro = gr.Textbox()
-        _ai = gr.Textbox(value="1")
-        _ao = gr.Textbox()
-        _go = gr.Textbox()
-        _ho = gr.Textbox()
-    _t.submit(reset_env,    [_t, _s],  [_ro])
-    _ai.submit(step_env,    [_ai],     [_ao])
-    _go.submit(get_state,   [],        [_go])
-    _ho.submit(health_check,[],        [_ho])
 
-# ── Launch ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  FastAPI app — mounts Gradio + exposes OpenEnv REST endpoints
+# ══════════════════════════════════════════════════════════════════
+
+app = FastAPI(title="MediGuard-AI")
+
+
+# ── /reset ────────────────────────────────────────────────────────
+@app.post("/reset")
+async def api_reset(request: Request):
+    """OpenEnv-spec reset. Accepts optional {task, seed} JSON body."""
+    global _env, _current_task, _step_count, _total_reward
+    global _episode_log, _conv_history, _vitals_history, _last_obs
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    task = body.get("task", "suppression")
+    seed = int(body.get("seed", 42))
+
+    _env = MediGuardEnv(task=task, seed=seed)
+    _current_task = task
+    _step_count = 0
+    _total_reward = 0.0
+    _episode_log = []
+    _conv_history = []
+    _vitals_history = []
+
+    obs = _env.reset()
+    _last_obs = obs
+
+    return JSONResponse({
+        "observation": obs if not isinstance(obs, list) else obs,
+        "info": {"task": task, "seed": seed}
+    })
+
+
+# ── /step ─────────────────────────────────────────────────────────
+@app.post("/step")
+async def api_step(request: Request):
+    """OpenEnv-spec step. Accepts {action} JSON body."""
+    global _env, _step_count, _total_reward, _last_obs
+
+    if _env is None:
+        return JSONResponse({"error": "call /reset first"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    action_raw = body.get("action", 1)
+    if isinstance(action_raw, str):
+        try:
+            action = [int(a.strip()) for a in action_raw.split(",")] \
+                if "," in action_raw else int(action_raw)
+        except ValueError:
+            action = 1
+    else:
+        action = action_raw
+
+    obs_next, reward, done, info = _env.step(action)
+    _step_count += 1
+    _total_reward += reward
+    _last_obs = obs_next
+
+    return JSONResponse({
+        "observation": obs_next,
+        "reward": reward,
+        "done": done,
+        "info": info,
+    })
+
+
+# ── /state ────────────────────────────────────────────────────────
+@app.get("/state")
+async def api_state():
+    """OpenEnv-spec state."""
+    if _env is None:
+        return JSONResponse({"error": "call /reset first"}, status_code=400)
+    return JSONResponse(_env.state())
+
+
+# ── /health ───────────────────────────────────────────────────────
+@app.get("/health")
+async def api_health():
+    return JSONResponse({"status": "ok", "llm_available": _llm_available})
+
+
+# ── Mount Gradio under /gradio, also serve it at root ─────────────
+gradio_app_mounted = gr.mount_gradio_app(app, gradio_app, path="/")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Entry point
+# ══════════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", 7860))
     host = "0.0.0.0" if (os.getenv("SPACE_ID") or os.getenv("DOCKER")) else "127.0.0.1"
-    app.launch(server_name=host, server_port=7860)
+    uvicorn.run(app, host=host, port=port)
