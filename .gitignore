@@ -1,21 +1,2 @@
-# Data 
-data/raw/ 
-data/processed/ 
-data/synthetic/ 
- 
-# Models 
-models/checkpoints/ 
-*.pt 
-*.pth 
-*.h5 
-*.keras 
- 
-# Python 
 __pycache__/ 
 *.pyc 
-.ipynb_checkpoints/ 
-.env 
- 
-# IDE 
-.vscode/ 
-.idea/ 
