@@ -4,7 +4,7 @@ emoji: 🏥
 colorFrom: blue
 colorTo: green
 sdk: gradio
-sdk_version: "5.0.0"
+sdk_version: "4.0.0"
 app_file: app.py
 pinned: false
 ---
@@ -21,34 +21,28 @@ pinned: false
 
 ## 🧠 What is MediGuard-AI?
 
-An RL environment where an AI agent monitors ICU patients and must decide — every minute — whether to **Ignore**, **Verify**, or **Alert**. The twist: the same vital sign reading means completely different things depending on what the patient is doing.
+Imagine you're a nurse watching ICU monitors for multiple patients at once. Every minute you see heart rate, blood pressure, oxygen levels, temperature — and you have three choices:
 
-| Situation | HR 130 bpm | Correct Action |
-|-----------|-----------|----------------|
-| 🍽️ Patient is eating | Expected | 😴 IGNORE |
-| 🚶 Patient is walking | Possible | 🔍 VERIFY |
-| 🛏️ Patient is resting | DANGER | 🚨 ALERT |
+| Action | Meaning |
+|--------|---------|
+| **0 — Ignore** | Everything looks fine, carry on |
+| **1 — Verify** | Something seems off, investigate |
+| **2 — Alert** | This is serious — get a doctor now |
 
-The environment uses **activity-gated rewards** — the novel mechanic that makes this more than a threshold-checking problem. A naive agent that panics at every spike gets penalized. A smart agent that understands context scores high.
+The challenge is that some patients naturally have high blood pressure (it's their normal). Some are walking around (elevated heart rate is expected). A naive AI panics at every spike. MediGuard-AI trains an RL agent to learn each patient's **personal baseline** and only respond when something is genuinely wrong.
 
 ---
 
 ## 🎯 Three Tasks (Easy → Hard)
 
 ### Task 1 — Suppression (Easy)
-A chronically hypertensive patient with baseline BP ~150/95 mmHg. The agent must learn this is *normal for them* and suppress false alarms.
-
-**Grader:** F1 harmonic mean of sensitivity × specificity. Pure-IGNORE → 0.0, Pure-ALERT → 0.0. Only a balanced agent scores high.
+A chronically hypertensive patient with baseline BP ~150/95 mmHg. The agent must learn this is *normal for them* and suppress false alarms. Graded on false alarm rate: score = 1.0 when FAR < 5%.
 
 ### Task 2 — Deterioration (Medium)
-A patient slowly developing sepsis over 6 simulated hours. Temperature rises, BP drops, SpO2 falls — all gradually. The agent must catch the trend early.
-
-**Grader:** Onset-delay scoring — `score = 0.3 + 0.7 × max(0, 1 − delay/20)`. Early detection is rewarded exponentially more. VERIFY alone doesn't count — must escalate to ALERT.
+A patient slowly developing sepsis over 6 simulated hours. Temperature rises, BP drops, SpO2 falls — all gradually. The agent must catch the trend early and alert before it becomes critical. Three-phase scoring rewards early detection.
 
 ### Task 3 — Triage (Hard)
-Four concurrent patients: healthy, post-op, deteriorating, healthy. The agent must rank them by urgency and allocate limited attention.
-
-**Grader:** NDCG@4 (50%) + ALERT-F1 (30%) + Responsiveness (20%) − concentration penalty − hesitation penalty. Measures priority *ordering* quality, not just per-patient accuracy.
+Four concurrent patients: healthy, post-op, deteriorating, healthy. The agent must identify who genuinely needs care vs. who is stable. Graded on F1 score (50%) + masked detection (30%) + triage priority (20%).
 
 ---
 
@@ -57,117 +51,16 @@ Four concurrent patients: healthy, post-op, deteriorating, healthy. The agent mu
 ```
 mediguard-ai/
 ├── patient_simulator.py    # Realistic vital sign generator (5 patient types)
-├── reward_function.py      # Action × Condition × Activity → reward (with fatigue + personalization)
+├── reward_function.py      # RewardFunction: action × condition → reward
 ├── mediguard_env.py        # OpenEnv-compliant RL environment (core)
-├── inference.py            # LLM agent (Qwen 7B/72B) + rule-based fallback + structured logging
-├── app.py                  # Gradio UI: interactive demo + full inference pipeline + API endpoints
-├── task1_suppression.py    # Grader: F1 harmonic mean of sensitivity & specificity
-├── task2_deterioration.py  # Grader: onset-delay scoring with false alarm penalty
-├── task3_triage.py         # Grader: NDCG@4 + ALERT-F1 + responsiveness − penalties
+├── inference.py            # Baseline rule-based agent + structured logging
+├── app.py                  # Gradio UI + API endpoints (HF Spaces entry point)
+├── task1_suppression.py    # Grader: false alarm rate
+├── task2_deterioration.py  # Grader: detection timing (3-phase)
+├── task3_triage.py         # Grader: F1 + masked detection + priority
 ├── openenv.yaml            # OpenEnv spec metadata
 ├── Dockerfile              # Container config for HF Spaces
-└── requirements.txt        # Python dependencies (numpy, pydantic, openai, gradio, pyyaml)
-```
-
----
-
-## 📋 File-by-File Details
-
-### `patient_simulator.py`
-Generates realistic ICU vital signs for 5 patient types: healthy, hypertensive, post-op, deteriorating, and custom. Simulates activity cycles (resting → eating → walking → distressed → falling) and sepsis-like drift with configurable severity. Pure data generator — no decision logic.
-
-### `reward_function.py`
-Maps `(action × condition × activity)` → reward signal. Key features:
-- **Activity context multipliers** — the core mechanic. Penalties are discounted during high-activity states (walking ×0.50, eating ×0.40) and amplified during dangerous activities (distressed ×1.25, falling ×1.60). Resting is baseline ×1.0.
-- **Alarm fatigue modifier** — >5 alerts in last 30 steps → reward reduced to 0.6×
-- **Personalization bonus** — correctly ignoring a stable patient after step 200 → +0.2 bonus
-- Tracks `action_history`, `condition_history`, and `activity_history` for grader use
-
-**Updated reward table:**
-```
-             | STABLE | BORDERLINE | EMERGENCY | DRUG_MASKED |
-ALERT        |  -0.5  |    +0.2    |   +1.0    |    +1.0     |
-VERIFY       |  -0.1  |    +0.7    |   +0.3    |    +0.3     |
-IGNORE       |  +0.2  |    -0.2    |   -1.0    |    -1.0     |
-```
-
-### `mediguard_env.py`
-OpenEnv-compliant environment with `reset() → obs`, `step(action) → (obs, reward, done, info)`, `state() → dict`. Contains:
-- **3 Pydantic models**: `ObservationModel`, `ActionModel`, `RewardModel` (required by OpenEnv spec)
-- **`_PatientTracker`** — per-patient rolling baseline and vitals history
-- **`_classify_condition()`** — maps continuous vitals to discrete `PatientCondition` enum using deterioration severity + vital thresholds
-- **Reward normalization** — raw range `[-1.6, 1.6]` mapped to `[0.0, 1.0]`
-- **Grader delegation** — `false_alarm_rate_grader()`, `deterioration_grader()`, `triage_grader()` call external grader modules
-
-### `inference.py`
-LLM-based agent using OpenAI-compatible API (HuggingFace router). Key features:
-- **Per-task model selection**: Suppression → `Qwen/Qwen2.5-7B-Instruct` (cheap), Deterioration/Triage → `Qwen/Qwen2.5-72B-Instruct` (powerful)
-- **Task-specific system prompts** — tuned for each grader's scoring criteria
-- **Vitals trend table** — last 8 readings formatted for deterioration detection
-- **Conversation history** — sliding window of 4 turns with reward feedback for pseudo-online-learning
-- **Triage: single API call** — all 4 patients in one prompt, output `{"actions": [2,0,1,0]}`
-- **Graceful fallback** — falls back to rule-based `baseline_agent()` on any API error (timeout, rate limit, parse error)
-- **Structured logging** — `[START]`, `[STEP]`, `[END]`, `[FALLBACK]`, `[REASONING]`, `[SUMMARY]` lines
-
-**Environment variables:**
-```
-HF_TOKEN / OPENAI_API_KEY / API_KEY   — authentication (checked in priority order)
-API_BASE_URL                           — LLM endpoint (default: HuggingFace router)
-MODEL_NAME                             — model ID (default: Qwen/Qwen2.5-72B-Instruct)
-```
-
-### `app.py`
-Gradio-based UI for HuggingFace Spaces with:
-- **Interactive demo tab** — reset env, pick agent mode (LLM / Rule-Based / Manual), step through episodes, live vitals monitor with risk tags
-- **How It Works tab** — visual explanation of the insight, scoring formulas, LLM architecture
-- **3 agent modes**: LLM Agent (real API calls), Rule-Based (baseline_agent), Manual (user picks actions)
-- **Full inference pipeline** — runs `python inference.py` end-to-end and streams output
-- **API endpoints** — `reset_env`, `step_env`, `get_state`, `health_check` exposed via Gradio API
-- Dark vitals display with raw+normalized values
-
-### `task1_suppression.py`
-**F1 harmonic mean** of sensitivity and specificity:
-- ALERT on emergency = full true positive
-- VERIFY on emergency = 0.5 TP (must commit to ALERT for full credit)
-- VERIFY on stable = 0.7 FP (spamming VERIFY is penalized)
-- Pure-IGNORE → sensitivity=0 → F1=**0.0** (can't cheat)
-- Expected scores: rule-based ~0.50, LLM ~0.80
-
-### `task2_deterioration.py`
-**Onset-delay scoring** with strict escalation requirement:
-- Finds deterioration episodes (≥5 consecutive non-STABLE steps)
-- Score per episode: `0.3 + 0.7 × max(0, 1 − delay/20)`
-- VERIFY alone does NOT count — must escalate to ALERT
-- False alarm penalty kicks in at 8% FAR, capped at 0.40
-- Expected scores: rule-based ~0.39, LLM ~0.75
-
-### `task3_triage.py`
-**NDCG@4 + F1 + Responsiveness − penalties:**
-- NDCG@4 (50%) — measures priority ordering quality across 4 patients
-- ALERT-F1 (30%) — only ALERT counts as true positive for emergencies
-- Responsiveness (20%) — how quickly agent adapts to condition changes
-- Concentration penalty — spamming same action to all patients is penalized
-- Hesitation penalty — VERIFY on EMERGENCY patients is explicitly penalized
-- Expected scores: rule-based ~0.22, LLM ~0.65
-
-### `openenv.yaml`
-OpenEnv spec metadata pointing to:
-- `env_module: mediguard_env`, `env_class: MediGuardEnv`
-- Pydantic models: `ObservationModel`, `ActionModel`, `RewardModel`
-- `inference_script: inference.py`, `app: app.py`
-- 3 tasks with grader references matching env methods
-
-### `Dockerfile`
-`python:3.11-slim` based container. Copies all source files and launches `app.py` on port 7860.
-
-### `requirements.txt`
-Minimal dependencies — only what the code actually imports:
-```
-numpy       — vital sign simulation + normalization
-pydantic    — OpenEnv schema validation (ObservationModel, ActionModel, RewardModel)
-openai      — LLM client (HuggingFace router compatible)
-gradio      — UI + API server
-pyyaml      — openenv.yaml validation in inference.py
+└── requirements.txt        # Python dependencies
 ```
 
 ---
@@ -189,9 +82,9 @@ pyyaml      — openenv.yaml validation in inference.py
 | `activity` | int | 0–4 | 0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling |
 | `vitals_history` | list | [10][6] | Last 10 timesteps of normalized vitals |
 
-**Action Space:** `Discrete(3)` — 0=Ignore, 1=Verify, 2=Alert
-**Episode Length:** 360 steps (6 simulated hours)
-**Reward:** Normalized to [0.0, 1.0]; shaped by activity context + alarm fatigue + personalization
+**Action Space:** `Discrete(3)` — 0=Ignore, 1=Verify, 2=Alert  
+**Episode Length:** 360 steps (6 simulated hours)  
+**Reward:** Normalized to [0.0, 1.0]; shaped by alarm fatigue modifier + personalization bonus  
 **Seed:** 42 (reproducible)
 
 ---
@@ -205,13 +98,10 @@ git clone <your-repo>
 cd mediguard-ai
 pip install -r requirements.txt
 
-# Set your HuggingFace token for LLM agent
-export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxx"
-
 # Launch Gradio UI
 python app.py
 
-# Run LLM inference across all 3 tasks
+# Run baseline inference across all 3 tasks
 python inference.py
 ```
 
@@ -252,19 +142,37 @@ score = env.triage_grader()
 
 ---
 
-## 📊 Expected Scores
+## 🧪 Reward Design
 
-| Task | Random Agent | Rule-Based | LLM Agent | Perfect |
-|------|:-----------:|:----------:|:---------:|:-------:|
-| Suppression | ~0.33 | ~0.50 | ~0.80 | 1.0 |
-| Deterioration | ~0.33 | ~0.39 | ~0.75 | 1.0 |
-| Triage | ~0.33 | ~0.22 | ~0.65 | 1.0 |
+```
+Base reward table (action × patient condition):
 
-These are honest scores — the graders are specifically designed so that:
-1. Pure-IGNORE and Pure-ALERT both score ~0.0 (no cheating)
-2. Rule-based agents score moderately (can't game the graders)
-3. LLM agents show clear improvement (activity context reasoning)
-4. Trained RL agents have room to improve further
+             | STABLE | BORDERLINE | EMERGENCY | DRUG_MASKED |
+ALERT        |  -0.5  |    +0.2    |   +1.0    |    +1.0     |
+VERIFY       |  +0.1  |    +0.4    |   -0.8    |    -0.5     |
+IGNORE       |  +0.2  |    -0.1    |   -2.0    |    -2.0     |
+
+Modifiers:
+  - Alarm fatigue:     >5 alerts in last 30 steps → 0.6× multiplier
+  - Personalization:   Correctly ignoring stable patient after step 200 → +0.2 bonus
+  - Normalization:     Raw [-2.0, 1.2] mapped to [0.0, 1.0]
+```
+
+---
+
+## 📊 Baseline Agent Performance
+
+The included rule-based agent (`inference.py`) uses three detection strategies:
+
+1. **Delta-based** — reacts to sudden deviations from rolling personal baseline
+2. **Absolute thresholds** — catches slow drifts (SpO2, temp, HR out-of-range)
+3. **Trend detection** — compares recent vs. oldest vitals in history window
+
+| Task | Strategy | Typical Mean Reward |
+|------|----------|-------------------|
+| Suppression | Delta + absolute | ~0.65–0.75 |
+| Deterioration | Trend + absolute | ~0.55–0.65 |
+| Triage | Per-patient baseline | ~0.50–0.60 |
 
 ---
 
@@ -275,8 +183,40 @@ The app auto-detects its environment:
 - Local development → binds to `127.0.0.1:7860`
 
 ```dockerfile
-FROM python:3.11-slim
-# Copies all source files and launches app.py on port 7860
+# Dockerfile uses python:3.11-slim
+# Installs requirements and launches app.py
+```
+
+---
+
+## 🔧 Development Workflow
+
+```bash
+# Work on feature branch
+git checkout sutikshan
+
+# Edit → commit → push to HF
+git add .
+git commit -m "your message"
+git push hf sutikshan:main --force
+
+# Sync from team main branch
+git pull origin main
+```
+
+> ⚠️ Edit README locally only — avoid simultaneous edits in HF UI + local. The YAML front-matter block **must** remain at the very top of this file for HF Spaces to parse it correctly.
+
+---
+
+## 📦 Dependencies
+
+```
+numpy       — vital sign simulation + normalization
+pydantic    — OpenEnv observation/action schema validation
+openai      — LLM client (ready for agent swap-in)
+gradio      — UI + API server
+audioop-lts — Python 3.13 audio compatibility for Gradio
+setuptools  — build tooling
 ```
 
 ---
