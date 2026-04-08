@@ -173,12 +173,11 @@ def demo_reset(task, seed, agent_mode):
     difficulty = {"suppression": "Easy", "deterioration": "Medium", "triage": "Hard"}[task]
     status = f"READY   {task.upper()}  [{difficulty}]   Seed {seed}   {agent_mode}"
 
-    # FIX 1: run_all_btn removed from shared outputs — stays always interactive
     return (
         status, obs_display,
         "—", "—", "—", "0 / 360",
         "\n".join(_episode_log),
-        gr.update(interactive=True),   # step_btn
+        gr.update(interactive=True),
         gr.update(visible=manual and not is_tri),
         gr.update(visible=manual and is_tri),
     )
@@ -263,14 +262,12 @@ def demo_step(action_radio, triage_txt, agent_mode):
                          f"  FINAL SCORE  :  {score:.4f}",
                          f"  MEAN REWARD  :  {mean_r:.4f}",
                          "=" * 50]
-        # FIX 1: removed run_all_btn from outputs
         return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
                 f"{_step_count}/360", "\n".join(_episode_log[-80:]),
                 gr.update(interactive=False),
                 gr.update(visible=manual and not is_tri), gr.update(visible=manual and is_tri))
 
     status = f"Step {_step_count}/360   Last Reward: {reward:+.3f}   Mean: {mean_r:.3f}"
-    # FIX 1: removed run_all_btn from outputs
     return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
             f"{_step_count}/360", "\n".join(_episode_log[-80:]),
             gr.update(interactive=True),
@@ -330,12 +327,11 @@ def health_check():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  CSS
+#  CSS — FIXED: no Google Fonts import (blocked by HF CSP)
+#         Using system font stacks that match the original look
 # ══════════════════════════════════════════════════════════════════
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Nunito:wght@400;600;700;800&display=swap');
-
 :root {
     --bg:      #f0f4ff;
     --bg2:     #ffffff;
@@ -347,9 +343,9 @@ CSS = """
     --green:   #16a34a;
     --amber:   #d97706;
     --red:     #dc2626;
-    --mono:    'JetBrains Mono', monospace;
-    --display: 'Rajdhani', sans-serif;
-    --body:    'Nunito', sans-serif;
+    --mono:    'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace;
+    --display: 'Rajdhani', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --body:    'Nunito', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 body, .gradio-container {
@@ -508,8 +504,7 @@ body, .gradio-container {
 }
 .tab-nav button.selected { color: var(--blue) !important; border-bottom: 2px solid var(--blue) !important; }
 
-/* ── FIX 2: Radio button selected state color ── */
-/* Gradio wraps radio items in a label with a span for the dot */
+/* Radio button selected state */
 .gradio-container .wrap .wrap-inner label {
     border: 2px solid var(--border) !important;
     border-radius: 10px !important;
@@ -526,27 +521,22 @@ body, .gradio-container {
     background: #eff6ff !important;
     color: var(--blue) !important;
 }
-/* Selected state — Gradio marks selected radio label with aria-checked or adds .selected */
 .gradio-container .wrap .wrap-inner label:has(input[type="radio"]:checked) {
     background: var(--blue) !important;
     border-color: var(--blue) !important;
     color: #ffffff !important;
     box-shadow: 0 2px 10px rgba(37,99,235,0.35) !important;
 }
-/* The radio dot itself — hide native dot, we use background color as indicator */
 .gradio-container .wrap .wrap-inner label input[type="radio"] {
     accent-color: #ffffff !important;
     width: 14px !important;
     height: 14px !important;
 }
-/* LLM Agent option — green when selected */
 .gradio-container .wrap .wrap-inner label:has(input[type="radio"]:checked):first-child {
     background: linear-gradient(135deg, #059669, #10b981) !important;
     border-color: #059669 !important;
     box-shadow: 0 2px 10px rgba(5,150,105,0.35) !important;
 }
-/* Rule-Based option — blue when selected (default already handled above) */
-/* Manual option — amber when selected */
 .gradio-container .wrap .wrap-inner label:last-child:has(input[type="radio"]:checked) {
     background: linear-gradient(135deg, #b45309, #d97706) !important;
     border-color: #b45309 !important;
@@ -614,9 +604,9 @@ HOW_INSIGHT_HTML = """
   </p>
   <table style="width:100%;border-collapse:collapse;font-size:0.9em">
     <tr style="border-bottom:2px solid #e5e7eb">
-      <th style="text-align:left;padding:8px 6px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">Situation</th>
-      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">HR 130 bpm</th>
-      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:JetBrains Mono,monospace">Correct Action</th>
+      <th style="text-align:left;padding:8px 6px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">Situation</th>
+      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">HR 130 bpm</th>
+      <th style="text-align:center;padding:8px;color:#6b7280;font-size:0.83em;font-family:ui-monospace,monospace">Correct Action</th>
     </tr>
     <tr style="border-bottom:1px solid #f3f4f6">
       <td style="padding:10px 6px">🍽 Patient is eating</td>
@@ -773,7 +763,6 @@ with gr.Blocks(
                 "Runs `inference.py` end-to-end (all 3 tasks, LLM agent, ~5–15 min). "
                 "Requires `HF_TOKEN`."
             )
-            # FIX 1: run_all_btn has no interactive=False anywhere — always clickable
             run_all_btn = gr.Button(
                 "🏃  Run Full Inference (All 3 Tasks)",
                 variant="stop", elem_classes=["btn-run"],
@@ -844,12 +833,11 @@ System Prompt (task rules + thresholds)
                     """)
 
     # ── Event wiring ──────────────────────────────────────────────
-    # FIX 1: _shared no longer contains run_all_btn
     _shared = [
         status_out, obs_out,
         metric_action, metric_reward, metric_mean, metric_step,
         log_out,
-        step_btn,                      # only step_btn toggled, not run_all_btn
+        step_btn,
         single_action_row, triage_action_row,
     ]
 
@@ -859,7 +847,7 @@ System Prompt (task rules + thresholds)
     task_dd.change(on_task_change, [task_dd, agent_radio], [single_action_row, triage_action_row])
     run_all_btn.click(demo_run_all, [agent_radio], [full_log])
 
-    # Hidden API wrappers (Gradio API endpoint exposure)
+    # Hidden API wrappers
     with gr.Row(visible=False):
         _t  = gr.Textbox(value="suppression")
         _s  = gr.Number(value=42)
