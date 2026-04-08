@@ -20,7 +20,11 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "httpx",
+    "openenv-core>=0.2.0",
 ]
+
+[project.scripts]
+server = "server.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
