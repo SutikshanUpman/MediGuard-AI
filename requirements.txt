@@ -1,8 +1,9 @@
 numpy
 pydantic
 openai
-gradio
+gradio==4.44.0
 pyyaml
 setuptools
 wheel
 ffmpeg-python
+audioop-lts
