@@ -1,4 +1,4 @@
-numpy
+numpy>=1.26
 pydantic
 openai
 gradio
@@ -6,7 +6,6 @@ pyyaml
 setuptools
 wheel
 ffmpeg-python
-audioop-lts
 fastapi
 uvicorn[standard]
 httpx
