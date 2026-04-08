@@ -12,7 +12,9 @@ env_module: mediguard_env
 env_class: MediGuardEnv
 observation_model: mediguard_env.ObservationModel
 action_model: mediguard_env.ActionModel
+reward_model: mediguard_env.RewardModel
 inference_script: inference.py
+app: app.py
 
 tasks:
   - name: suppression
@@ -61,3 +63,14 @@ observation_space:
   hours_observed: { type: float, description: "Hours elapsed (step / 60)" }
   activity: { type: int, range: [0, 4], description: "0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling" }
   vitals_history: { type: list, shape: [10, 6], description: "Last 10 timesteps of normalized vitals" }
+
+reward_space:
+  type: float
+  range: [0.0, 1.0]
+  description: >
+    Normalized reward signal in [0, 1].
+    Raw reward from RewardFunction (range [-1.6, 1.6]) is linearly scaled to [0, 1].
+    1.0 = optimal action for current patient condition.
+    0.0 = worst possible action (e.g. ALERT on a stable patient every step).
+    Partial credit is awarded for VERIFY on borderline conditions.
+    Reward is averaged across all patients for the triage task.

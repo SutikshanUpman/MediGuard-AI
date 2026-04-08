@@ -1,11 +1,21 @@
 """
 Task 1: Suppression Grader (Easy)
 =================================
-Grades how well the agent suppresses false alarms for a hypertensive patient.
+Grades how well the agent suppresses false alarms for a hypertensive patient
+while still catching real emergencies.
 
-Score = 1.0 when false alarm rate < 5%
-Score = 0.0 when false alarm rate >= 60%
-Linear interpolation in between, with a penalty for missed real emergencies.
+Uses F1 harmonic mean of sensitivity and specificity:
+  - sensitivity = correctly responded to emergencies / total emergencies
+    (ALERT counts as full TP, VERIFY counts as 0.5 TP — must commit to ALERT)
+  - specificity = correctly ignored stable periods / total stable periods
+    (VERIFY counts as 0.7 FP — spamming VERIFY is penalized more heavily)
+  - score = 2 × sensitivity × specificity / (sensitivity + specificity)
+
+Calibrated so that:
+  - Rule-based agent (mostly VERIFY/IGNORE) scores ~0.50
+  - A smart LLM/RL agent that correctly ALERTs emergencies and IGNOREs stable → ~0.80+
+  - Pure-IGNORE agent → sensitivity=0 → F1=0.0
+  - Pure-ALERT agent → specificity=0 → F1=0.0
 """
 
 from reward_function import Action, PatientCondition
@@ -13,7 +23,7 @@ from reward_function import Action, PatientCondition
 
 def grade_suppression(stats: dict) -> float:
     """
-    Grade the suppression task.
+    Grade the suppression task using F1 harmonic mean.
 
     Parameters
     ----------
@@ -32,38 +42,52 @@ def grade_suppression(stats: dict) -> float:
     if total_steps == 0:
         return 0.0
 
-    # Count false alarms: ALERT when condition is STABLE or BORDERLINE
-    false_alarms = 0
-    real_emergencies = 0
-    missed_emergencies = 0
+    # Count outcomes
+    true_positives  = 0.0   # Alert/Verify during Emergency
+    false_negatives = 0.0   # Ignore during Emergency
+    true_negatives  = 0.0   # Ignore during Stable
+    false_positives = 0.0   # Alert/Verify during Stable
 
     for action, condition in zip(action_history, condition_history):
-        if condition in (PatientCondition.EMERGENCY, PatientCondition.DRUG_MASKED):
-            real_emergencies += 1
-            if action == Action.IGNORE:
-                missed_emergencies += 1
-        else:
+        is_emergency = condition in (PatientCondition.EMERGENCY, PatientCondition.DRUG_MASKED)
+
+        if is_emergency:
             if action == Action.ALERT:
-                false_alarms += 1
+                true_positives += 1.0        # Full credit — committed to ALERT
+            elif action == Action.VERIFY:
+                true_positives += 0.5        # Partial credit — noticed but didn't escalate
+                false_negatives += 0.5       # Partial miss — should have ALERTed
+            else:  # IGNORE during emergency
+                false_negatives += 1.0
 
-    # False alarm rate (among non-emergency steps)
-    non_emergency_steps = total_steps - real_emergencies
-    if non_emergency_steps > 0:
-        false_alarm_rate = false_alarms / non_emergency_steps
+        else:  # STABLE or BORDERLINE
+            if action == Action.IGNORE:
+                true_negatives += 1.0
+            elif action == Action.ALERT:
+                false_positives += 1.0       # Fully wrong
+            else:  # VERIFY during stable
+                false_positives += 0.7       # Raised from 0.3 — VERIFY is not a safe default
+
+    # Sensitivity: how well did we catch real emergencies?
+    total_emergencies = true_positives + false_negatives
+    if total_emergencies > 0:
+        sensitivity = true_positives / total_emergencies
     else:
-        false_alarm_rate = 0.0
+        # No emergencies in this episode — cap sensitivity so agent can't get free marks.
+        # Without emergencies, the agent has no way to prove it can handle them.
+        sensitivity = 0.5
 
-    # Linear score: 5% → 1.0, 60% → 0.0
-    if false_alarm_rate <= 0.05:
-        score = 1.0
-    elif false_alarm_rate >= 0.60:
-        score = 0.0
+    # Specificity: how well did we suppress false alarms?
+    total_stable = true_negatives + false_positives
+    if total_stable > 0:
+        specificity = true_negatives / total_stable
     else:
-        score = 1.0 - (false_alarm_rate - 0.05) / (0.60 - 0.05)
+        specificity = 1.0
 
-    # Penalty for missed real emergencies
-    if real_emergencies > 0:
-        miss_rate = missed_emergencies / real_emergencies
-        score *= (1.0 - 0.5 * miss_rate)  # up to 50% penalty
+    # F1 harmonic mean
+    if (sensitivity + specificity) > 0:
+        f1 = 2.0 * sensitivity * specificity / (sensitivity + specificity)
+    else:
+        f1 = 0.0
 
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, f1))
