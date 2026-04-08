@@ -1,7 +1,7 @@
 numpy
 pydantic
 openai
-gradio==4.44.0
+gradio
 pyyaml
 setuptools
 wheel
