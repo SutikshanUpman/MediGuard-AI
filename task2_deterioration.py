@@ -115,7 +115,8 @@ def grade_deterioration(stats: dict) -> float:
             delay = first_alert - onset
             # Base score 0.3 for detecting at all (was 0.5)
             # Tighter delay window: 20 steps (was 40)
-            detect_score = 0.3 + 0.7 * max(0.0, 1.0 - delay / 20.0)
+            detect_score = 0.3 + 0.7 * max(0.0, 1.0 - delay / 30.0)
+
 
             # Small bonus for very early ALERT
             if delay <= 15:

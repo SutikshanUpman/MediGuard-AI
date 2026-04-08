@@ -302,9 +302,7 @@ def on_task_change(task, agent_mode):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  CSS — fixed for both HF Spaces and localhost
-#  Key fix: avoid --bg/:root vars that HF Spaces theme overrides.
-#  Use explicit hex values on every rule so HF dark injection can't win.
+#  CSS
 # ══════════════════════════════════════════════════════════════════
 
 CSS = """
@@ -921,14 +919,31 @@ async def api_step(request: Request):
         body = {}
 
     action_raw = body.get("action", 1)
-    if isinstance(action_raw, str):
-        try:
-            action = [int(a.strip()) for a in action_raw.split(",")] \
-                if "," in action_raw else int(action_raw)
-        except ValueError:
-            action = 1
-    else:
-        action = action_raw
+    task = _current_task or "suppression"
+
+    # KEY FIX: robust action parsing for any format Nemotron might send
+    try:
+        if task == "triage":
+            if isinstance(action_raw, list):
+                action = [max(0, min(2, int(a))) for a in action_raw]
+            elif isinstance(action_raw, str) and "," in action_raw:
+                action = [max(0, min(2, int(a.strip()))) for a in action_raw.split(",")]
+            elif isinstance(action_raw, (int, float)):
+                action = [max(0, min(2, int(action_raw)))] * 4
+            else:
+                action = [1, 1, 1, 1]
+            while len(action) < 4:
+                action.append(0)
+            action = action[:4]
+        else:
+            if isinstance(action_raw, list):
+                action = max(0, min(2, int(action_raw[0])))
+            elif isinstance(action_raw, str):
+                action = max(0, min(2, int(action_raw.strip())))
+            else:
+                action = max(0, min(2, int(action_raw)))
+    except Exception:
+        action = [1, 1, 1, 1] if task == "triage" else 1
 
     obs_next, reward, done, info = _env.step(action)
     _step_count += 1

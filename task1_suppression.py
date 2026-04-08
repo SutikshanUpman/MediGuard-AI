@@ -62,11 +62,17 @@ def grade_suppression(stats: dict) -> float:
 
         else:  # STABLE or BORDERLINE
             if action == Action.IGNORE:
-                true_negatives += 1.0
+                if condition == PatientCondition.BORDERLINE:
+                    true_negatives += 0.5    # ignoring borderline is risky
+                else:
+                    true_negatives += 1.0    # ignoring stable is correct
             elif action == Action.ALERT:
-                false_positives += 1.0       # Fully wrong
-            else:  # VERIFY during stable
-                false_positives += 0.7       # Raised from 0.3 — VERIFY is not a safe default
+                false_positives += 1.0       # always wrong on non-emergency
+            else:  # VERIFY
+                if condition == PatientCondition.BORDERLINE:
+                    false_positives += 0.1   # VERIFY on borderline = correct caution
+                else:
+                    false_positives += 0.7   # VERIFY on stable = unnecessary, penalize
 
     # Sensitivity: how well did we catch real emergencies?
     total_emergencies = true_positives + false_negatives
