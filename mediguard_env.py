@@ -206,8 +206,9 @@ class MediGuardEnv:
         else:
             self._reward_fns = [RewardFunction()]
 
-        # Initialise by calling reset
-        self.reset()
+        # Trackers are populated on the first explicit reset() call.
+        # Do NOT call reset() here — run_episode() calls it after construction,
+        # and a double reset desynchronises the simulator timestep from _step.
 
     # -------------------------------------------------------------- #
     #  Public API                                                     #
