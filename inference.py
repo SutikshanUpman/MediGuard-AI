@@ -22,9 +22,21 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import time
 from typing import Dict, List, Tuple, Union
 
 from mediguard_env import MediGuardEnv
+
+# ------------------------------------------------------------------ #
+#  Hard wall-clock timeout (safety net for the 30-min validator cap) #
+# ------------------------------------------------------------------ #
+
+_TOTAL_TIMEOUT_SECONDS   = 1500  # 25-min hard cap across all 3 tasks
+_EPISODE_TIMEOUT_SECONDS = 480   # 8-min cap per episode
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError("Inference exceeded allocated wall-clock time — killed by safety guard")
 
 # ------------------------------------------------------------------ #
 #  Constants                                                          #
@@ -345,6 +357,10 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
     score = 0.0
     last_action: Union[int, List[int]] = 0
 
+    # Per-episode timeout: if env hangs, abort cleanly rather than killing the process
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(_EPISODE_TIMEOUT_SECONDS)
+
     try:
         env = MediGuardEnv(task=task, seed=seed)
         obs = env.reset()
@@ -375,12 +391,22 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
         score = grader_map[task]()
         success = score > 0.0
 
+    except TimeoutError as te:
+        steps += 1
+        log_step(steps, 0, 0.0, True, error=str(te))
+        success = False
+        score = 0.0
+        print(f"[TIMEOUT] task={task} episode exceeded {_EPISODE_TIMEOUT_SECONDS}s limit", flush=True)
+
     except Exception as exc:
         steps += 1
         log_step(steps, 0, 0.0, True, error=str(exc))
         success = False
         score = 0.0
         print(f"[ERROR] task={task} exception={exc}", flush=True)
+
+    finally:
+        signal.alarm(0)  # Always cancel the alarm when episode ends
 
     log_end(success, steps, rewards, score)
     return rewards, score
@@ -395,12 +421,24 @@ def main():
     print("[INFO] Mode: rule_based_only (no LLM calls — guaranteed fast)", flush=True)
     print("[INFO] Worst-case runtime: 60 × 3 × ~0.001s = < 1 second", flush=True)
 
+    # Global safety cap: if all 3 episodes somehow exceed 25 min total, abort
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(_TOTAL_TIMEOUT_SECONDS)
+
     tasks = ["suppression", "deterioration", "triage"]
     all_results: Dict[str, Dict] = {}
 
-    for task in tasks:
-        rewards, score = run_episode(task, seed=42)
-        all_results[task] = {"rewards": rewards, "score": score}
+    try:
+        for task in tasks:
+            rewards, score = run_episode(task, seed=42)
+            all_results[task] = {"rewards": rewards, "score": score}
+    except TimeoutError:
+        print("[TIMEOUT] Total inference exceeded 25-minute cap. Aborting.", flush=True)
+        for task in tasks:
+            if task not in all_results:
+                all_results[task] = {"rewards": [], "score": 0.0}
+    finally:
+        signal.alarm(0)
 
     print(flush=True)
     print("=" * 60, flush=True)
