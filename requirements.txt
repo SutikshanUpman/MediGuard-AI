@@ -5,8 +5,6 @@ gradio
 pyyaml
 setuptools
 wheel
-ffmpeg-python
-audioop-lts
 fastapi
 uvicorn[standard]
 httpx
