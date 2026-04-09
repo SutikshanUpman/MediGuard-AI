@@ -283,7 +283,7 @@ def demo_run_all(_):
     try:
         r = subprocess.run([sys.executable, "inference.py"],
                            capture_output=True, text=True,
-                           env=os.environ.copy(), timeout=900)
+                           env=os.environ.copy(), timeout=55)
         return (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "No output."
     except subprocess.TimeoutExpired:
         return "Timed out after 15 min."
@@ -972,6 +972,21 @@ async def api_state():
 async def api_health():
     return JSONResponse({"status": "ok", "llm_available": _llm_available})
 
+# ── /score ───────────────────────────────────────────────────────
+@app.get("/score")
+async def api_score():
+    """Fast scoring endpoint — returns current grader scores without running a new episode."""
+    if _env is None:
+        return JSONResponse({"error": "call /reset first"}, status_code=400)
+    try:
+        scores = {
+            "suppression":   float(_env.false_alarm_rate_grader()) if _current_task == "suppression" else None,
+            "deterioration": float(_env.deterioration_grader())    if _current_task == "deterioration" else None,
+            "triage":        float(_env.triage_grader())           if _current_task == "triage" else None,
+        }
+        return JSONResponse({"scores": scores, "task": _current_task})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # ── Mount Gradio under /gradio, also serve it at root ─────────────
 gradio_app_mounted = gr.mount_gradio_app(app, gradio_app, path="/")
