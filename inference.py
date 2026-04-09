@@ -4,6 +4,9 @@ MediGuard-AI — LLM-Based Inference Script
 Runs an LLM agent (via OpenAI client) against all 3 hackathon tasks.
 Falls back to a rule-based baseline agent on API errors or missing key.
 
+Runtime guarantee: 60 steps × 3 tasks × 4s timeout = 720s = 12 min worst case.
+Well within the 30-minute eval time limit.
+
 Environment variables:
   HF_TOKEN / API_KEY / OPENAI_API_KEY — authentication token
   API_BASE_URL — LLM endpoint (default: HuggingFace router)
@@ -14,14 +17,16 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
-import traceback
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import httpx
 from openai import OpenAI
 from mediguard_env import MediGuardEnv
+
+# ------------------------------------------------------------------ #
+#  Configuration                                                      #
+# ------------------------------------------------------------------ #
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
@@ -40,17 +45,15 @@ MODEL_BY_TASK = {
     "triage":        MODEL_NAME,
 }
 
-# CRITICAL FIX: timeout must live on the httpx.Client, NOT in
-# chat.completions.create(). Passing timeout= there is not a valid
-# openai SDK kwarg — it raises TypeError on every call, which gets
-# caught as a generic exception, sends every step to rule-based
-# fallback, and the 359 failed calls accumulate enough latency to
-# exceed the 20-min eval time limit.
+# ── Timeout fix ─────────────────────────────────────────────────────
+# timeout= is NOT a valid kwarg in chat.completions.create().
+# Must be set at the httpx.Client level.
+# 4s hard cap: 60 steps × 3 tasks × 4s = 720s = 12 min worst case.
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=API_KEY,
     http_client=httpx.Client(
-        timeout=httpx.Timeout(20.0, connect=5.0)
+        timeout=httpx.Timeout(4.0, connect=4.0)
     ),
 )
 
@@ -72,6 +75,10 @@ BASELINE_SCORES = {
     "triage":        0.3073,
 }
 
+# ------------------------------------------------------------------ #
+#  System Prompts                                                     #
+# ------------------------------------------------------------------ #
+
 SUPPRESSION_PROMPT = """You are an ICU monitoring AI. Your job: decide if a patient's vitals need attention.
 
 KEY INSIGHT: Vitals are normalized relative to THIS patient's personal baseline (0-1 scale).
@@ -87,7 +94,7 @@ RULES FOR SUPPRESSION TASK:
 - VERIFY is the safe middle ground — use it for uncertain cases.
 - After learning the baseline (hours > 1.0), trust that stable readings are fine.
 
-Respond with ONLY JSON: {"action": 0, "reasoning": "max 15 words"}
+Respond with ONLY JSON: {"action": 0, "reasoning": "Explain using vitals/activity in <15 words"}
 action: 0=IGNORE, 1=VERIFY, 2=ALERT"""
 
 DETERIORATION_PROMPT = """You are an ICU monitoring AI detecting slow patient deterioration (sepsis).
@@ -104,7 +111,7 @@ RULES FOR DETERIORATION TASK:
 - Early detection scores HIGHER than late detection — act on trends, don't wait for crisis.
 - If SpO2 is below 0.50 or temp above 0.65, ALERT regardless of trend.
 
-Respond with ONLY JSON: {"action": 0, "reasoning": "max 15 words"}
+Respond with ONLY JSON: {"action": 0, "reasoning": "Explain using vitals/activity in <15 words"}
 action: 0=IGNORE, 1=VERIFY, 2=ALERT"""
 
 TRIAGE_PROMPT = """You are an ICU monitoring AI triaging 4 patients simultaneously.
@@ -122,7 +129,7 @@ RULES FOR TRIAGE TASK:
 - High baseline_delta + resting = more concerning than high delta + walking.
 - Don't ALERT more than 2 patients unless multiple are genuinely critical.
 
-Respond with ONLY JSON: {"actions": [a0,a1,a2,a3], "reasoning": "max 20 words"}
+Respond with ONLY JSON: {"actions": [a0,a1,a2,a3], "reasoning": "Explain ranking using vitals/activity in <20 words"}
 Each action: 0=IGNORE, 1=VERIFY, 2=ALERT. Array position = patient index."""
 
 SYSTEM_PROMPTS = {
@@ -131,6 +138,9 @@ SYSTEM_PROMPTS = {
     "triage":        TRIAGE_PROMPT,
 }
 
+# ------------------------------------------------------------------ #
+#  Observation formatting                                             #
+# ------------------------------------------------------------------ #
 
 def obs_to_user_message(obs: Dict, task: str, vitals_history: list,
                         conversation_history: list) -> str:
@@ -138,7 +148,7 @@ def obs_to_user_message(obs: Dict, task: str, vitals_history: list,
     hours = obs.get("hours_observed", 0.0)
 
     lines = [
-        f"Step: {int(hours * 60)}/{360}  |  Hours observed: {hours:.1f}h",
+        f"Step: {int(hours * 60)}/{60}  |  Hours observed: {hours:.1f}h",
         "",
         "CURRENT VITALS (normalized 0-1):",
         f"  Heart Rate:    {obs.get('heart_rate', 0):.3f}",
@@ -200,6 +210,9 @@ def triage_obs_to_message(obs_list: List[Dict], conversation_history: list) -> s
             lines.append(f"  Actions={entry['action']} → reward={entry['reward']:.2f}")
     return "\n".join(lines)
 
+# ------------------------------------------------------------------ #
+#  LLM agents                                                         #
+# ------------------------------------------------------------------ #
 
 def llm_agent(obs: Dict, task: str, conversation_history: list,
               vitals_history: list, model: str) -> Tuple[int, str]:
@@ -272,6 +285,9 @@ def _parse_triage_response(raw: str) -> Tuple[List[int], str]:
     actions = [max(0, min(2, int(a))) for a in actions]
     return actions, reasoning
 
+# ------------------------------------------------------------------ #
+#  Rule-based fallback                                                #
+# ------------------------------------------------------------------ #
 
 def baseline_agent(obs: Dict) -> int:
     activity = obs["activity"]
@@ -331,6 +347,9 @@ def baseline_agent(obs: Dict) -> int:
 def triage_baseline(obs_list: List[Dict]) -> List[int]:
     return [baseline_agent(obs) for obs in obs_list]
 
+# ------------------------------------------------------------------ #
+#  OpenEnv validation                                                 #
+# ------------------------------------------------------------------ #
 
 def openenv_validate() -> bool:
     try:
@@ -370,6 +389,9 @@ def openenv_validate() -> bool:
     print("[VALIDATE] pass", flush=True)
     return True
 
+# ------------------------------------------------------------------ #
+#  Logging                                                            #
+# ------------------------------------------------------------------ #
 
 def log_start(task: str, model: str):
     print(f"[START] task={task} env=mediguard model={model}", flush=True)
@@ -401,7 +423,9 @@ def log_reasoning(action, reasoning: str):
         action_str = str(action)
     print(f"[REASONING] last_action={action_str} reasoning=\"{reasoning}\"", flush=True)
 
-
+# ------------------------------------------------------------------ #
+#  Episode runner                                                     #
+# ------------------------------------------------------------------ #
 def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
     model = MODEL_BY_TASK.get(task, MODEL_NAME)
     log_start(task, model)
@@ -410,7 +434,7 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
     rewards: List[float] = []
     steps = 0
     score = 0.0
-    last_action = 0
+    last_action: Union[int, List[int]] = 0
     last_reasoning = ""
     fallback_count = 0
     conversation_history: List[Dict] = []
@@ -456,7 +480,9 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
             last_action = action
             last_reasoning = reasoning
 
+            # ── LOGGING FOR EVERY STEP (Added for Phase 3 visibility) ──
             log_step(steps, action, reward, done, error=None)
+            log_reasoning(action, reasoning)
 
             if task == "triage":
                 obs_text = triage_obs_to_message(obs, conversation_history)
@@ -494,8 +520,9 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
         success = False
         score = 0.0
 
+    # ── FINAL SUMMARY ──
     log_end(success, steps, rewards, score)
-    log_reasoning(last_action, last_reasoning)
+    # The final log_reasoning call is removed here as it is now logged at every step above.
 
     if fallback_count > 0:
         print(
@@ -506,14 +533,18 @@ def run_episode(task: str, seed: int = 42) -> Tuple[List[float], float]:
 
     return rewards, score
 
+# ------------------------------------------------------------------ #
+#  Entry point                                                        #
+# ------------------------------------------------------------------ #
 
 def main():
     openenv_validate()
 
     if not HAS_API_KEY:
-        print("[INFO] No API key found — running fully rule-based (fast mode)", flush=True)
+        print("[INFO] No API key — running fully rule-based (fast mode)", flush=True)
     else:
-        print(f"[INFO] API key found — LLM mode enabled, endpoint={API_BASE_URL}", flush=True)
+        print(f"[INFO] LLM mode: {MODEL_NAME} | 60 steps/task | 4s timeout", flush=True)
+        print(f"[INFO] Worst-case runtime: 60 × 3 × 4s = 720s = 12 min", flush=True)
 
     tasks = ["suppression", "deterioration", "triage"]
     all_results = {}

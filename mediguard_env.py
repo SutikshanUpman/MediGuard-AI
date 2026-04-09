@@ -34,7 +34,7 @@ class ObservationModel(BaseModel):
     respiratory_rate: float = Field(..., ge=0.0, le=1.0, description="Normalized respiratory rate")
     temperature: float = Field(..., ge=0.0, le=1.0, description="Normalized temperature")
     baseline_delta: float = Field(..., ge=0.0, le=1.0, description="Rolling deviation from personal baseline")
-    hours_observed: float = Field(..., ge=0.0, description="Hours elapsed (step / 60)")
+    hours_observed: float = Field(..., ge=0.0, description="Hours elapsed (step / 10.0)")
     activity: int = Field(..., ge=0, le=4, description="Current activity code")
     vitals_history: list = Field(..., description="Last 10 timesteps of normalized vitals [10][6]")
 
@@ -63,7 +63,7 @@ class RewardModel(BaseModel):
             "1.0 = optimal action, 0.0 = worst possible action."
         ),
     )
-    done: bool = Field(..., description="True if the episode has ended (step >= 360).")
+    done: bool = Field(..., description="True if the episode has ended (step >= 60).")
     step: int = Field(..., ge=0, description="Current step number within the episode.")
 
 
@@ -98,7 +98,7 @@ TRIAGE_PATIENTS = [
     ("healthy",        3),
 ]
 
-EPISODE_LENGTH = 360
+EPISODE_LENGTH =60
 NUM_ACTIONS = 3          # Discrete(3): 0=Ignore, 1=Verify, 2=Alert
 HISTORY_LEN = 10         # Number of past timesteps kept in vitals_history
 
@@ -162,7 +162,7 @@ class _PatientTracker:
             "respiratory_rate": float(norm[4]),
             "temperature":      float(norm[5]),
             "baseline_delta":   baseline_delta,
-            "hours_observed":   step / 60.0,
+            "hours_observed":   step / 10.0,
             "activity":         int(self.sim.get_activity()),
             "vitals_history":   padded_history,
         }
@@ -185,7 +185,7 @@ class MediGuardEnv:
     Actions are Discrete(3) per patient:
       0 = Ignore   1 = Verify   2 = Alert
 
-    Episode length: 360 steps.
+    Episode length: 60 steps.
     """
 
     def __init__(self, task: str = "suppression", seed: int = 42):

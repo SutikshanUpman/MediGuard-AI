@@ -3,7 +3,8 @@ title: MediGuard-AI
 emoji: 🏥
 colorFrom: blue
 colorTo: green
-sdk: docker
+sdk: gradio
+sdk_version: "4.0.0"
 app_file: app.py
 pinned: false
 ---
@@ -77,12 +78,12 @@ mediguard-ai/
 | `respiratory_rate` | float | 0–1 | Normalized RR (5–40 bpm) |
 | `temperature` | float | 0–1 | Normalized temp (34–42°C) |
 | `baseline_delta` | float | 0–1 | Rolling deviation from personal baseline |
-| `hours_observed` | float | ≥0 | Elapsed time (step / 60) |
+| `hours_observed` | float | ≥0 | Elapsed time (step / 10.0) |
 | `activity` | int | 0–4 | 0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling |
 | `vitals_history` | list | [10][6] | Last 10 timesteps of normalized vitals |
 
 **Action Space:** `Discrete(3)` — 0=Ignore, 1=Verify, 2=Alert  
-**Episode Length:** 360 steps (6 simulated hours)  
+**Episode Length:** 60 steps (6 simulated hours)  
 **Reward:** Normalized to [0.0, 1.0]; shaped by alarm fatigue modifier + personalization bonus  
 **Seed:** 42 (reproducible)
 

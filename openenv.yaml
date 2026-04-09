@@ -24,7 +24,7 @@ tasks:
       normal for this patient and avoid unnecessary alerts.
     difficulty: easy
     grader: false_alarm_rate_grader
-    episode_length: 360
+    episode_length: 60
 
   - name: deterioration
     description: >
@@ -33,7 +33,7 @@ tasks:
       The agent must catch the trend early and alert appropriately.
     difficulty: medium
     grader: deterioration_grader
-    episode_length: 360
+    episode_length: 60
 
   - name: triage
     description: >
@@ -42,7 +42,7 @@ tasks:
       which patient genuinely needs care versus who is stable.
     difficulty: hard
     grader: triage_grader
-    episode_length: 360
+    episode_length: 60
 
 action_space:
   type: discrete
@@ -60,7 +60,7 @@ observation_space:
   respiratory_rate: { type: float, range: [0.0, 1.0], description: "Normalized respiratory rate (5-40 bpm)" }
   temperature: { type: float, range: [0.0, 1.0], description: "Normalized temperature (34-42°C)" }
   baseline_delta: { type: float, range: [0.0, 1.0], description: "Rolling deviation from personal baseline" }
-  hours_observed: { type: float, description: "Hours elapsed (step / 60)" }
+  hours_observed: { type: float, description: "Hours elapsed (step / 10.0)" }
   activity: { type: int, range: [0, 4], description: "0=resting, 1=eating, 2=ambulating, 3=distressed, 4=falling" }
   vitals_history: { type: list, shape: [10, 6], description: "Last 10 timesteps of normalized vitals" }
 

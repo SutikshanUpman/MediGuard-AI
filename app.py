@@ -179,7 +179,7 @@ def demo_reset(task, seed, agent_mode):
 
     return (
         status, obs_display,
-        "—", "—", "—", "0 / 360",
+        "—", "—", "—", "0 / 60",
         "\n".join(_episode_log),
         gr.update(interactive=True),
         gr.update(visible=manual and not is_tri),
@@ -267,13 +267,13 @@ def demo_step(action_radio, triage_txt, agent_mode):
                          f"  MEAN REWARD  :  {mean_r:.4f}",
                          "=" * 50]
         return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
-                f"{_step_count}/360", "\n".join(_episode_log[-80:]),
+                f"{_step_count}/60", "\n".join(_episode_log[-80:]),
                 gr.update(interactive=False),
                 gr.update(visible=manual and not is_tri), gr.update(visible=manual and is_tri))
 
-    status = f"Step {_step_count}/360   Last Reward: {reward:+.3f}   Mean: {mean_r:.3f}"
+    status = f"Step {_step_count}/60   Last Reward: {reward:+.3f}   Mean: {mean_r:.3f}"
     return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
-            f"{_step_count}/360", "\n".join(_episode_log[-80:]),
+            f"{_step_count}/60", "\n".join(_episode_log[-80:]),
             gr.update(interactive=True),
             gr.update(visible=manual and not is_tri), gr.update(visible=manual and is_tri))
 
@@ -692,7 +692,7 @@ with gr.Blocks(
         with gr.Tab("🎮 Interactive Demo"):
 
             with gr.Row():
-                metric_step   = gr.Textbox(value="0 / 360", label="Step",        interactive=False)
+                metric_step   = gr.Textbox(value="0 / 60", label="Step",        interactive=False)
                 metric_reward = gr.Textbox(value="—",        label="Last Reward", interactive=False)
                 metric_mean   = gr.Textbox(value="—",        label="Mean Reward", interactive=False)
                 metric_action = gr.Textbox(value="—",        label="Last Action", interactive=False)
@@ -841,7 +841,7 @@ System Prompt (task rules + thresholds)
 ```
 
 **Models in use:**
-- Suppression → `Qwen/Qwen2.5-7B-Instruct` (fast, cheap)
+- Suppression → `{MODEL_NAME}`
 - Deterioration → `{MODEL_NAME}`
 - Triage → `{MODEL_NAME}`
 

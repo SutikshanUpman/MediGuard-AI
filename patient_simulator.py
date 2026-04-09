@@ -177,9 +177,9 @@ class PatientSimulator:
     def _apply_deterioration(self, vitals: Dict[str, float]) -> Dict[str, float]:
         """
         time_since_start = self.timestep - self.deterioration_start_time
-        self.deterioration_severity = min(time_since_start / 360.0, 1.0)
+        self.deterioration_severity = min(time_since_start / 30.0, 1.0)
         ```
-        Severity goes from 0.0 to 1.0 over 360 timesteps (6 hours). Then it multiplies that severity against each vital:
+        Severity goes from 0.0 to 1.0 over 30 timesteps (scaled for 60-step episode). Then it multiplies that severity against each vital:
         ```
         Temp         → slowly rises (fever)
         Heart rate   → climbs (body working harder)
@@ -205,7 +205,7 @@ class PatientSimulator:
             return vitals
         
         time_since_start = self.timestep - self.deterioration_start_time
-        self.deterioration_severity = min(time_since_start / 360.0, 1.0)
+        self.deterioration_severity = min(time_since_start / 30.0, 1.0)
         
         modified = vitals.copy()
         noise_scale = 1.0 + self.deterioration_severity * 2.0
