@@ -22,5 +22,10 @@ COPY README.md .
 # HuggingFace Spaces uses port 7860
 EXPOSE 7860
 
-# Run the Gradio app
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+# entrypoint.sh decides what to run:
+#   - If RUN_INFERENCE=1 (set by validator): python inference.py
+#   - Otherwise: uvicorn app:app (HuggingFace Spaces default)
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]
