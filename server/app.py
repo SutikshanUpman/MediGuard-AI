@@ -996,7 +996,10 @@ gradio_app_mounted = gr.mount_gradio_app(app, gradio_app, path="/")
 #  Entry point
 # ══════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def main():
     port = int(os.getenv("PORT", 7860))
     host = "0.0.0.0" if (os.getenv("SPACE_ID") or os.getenv("DOCKER")) else "127.0.0.1"
     uvicorn.run(app, host=host, port=port)
+
+if __name__ == "__main__":
+    main()
