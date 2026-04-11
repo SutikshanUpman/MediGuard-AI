@@ -2,7 +2,7 @@ spec_version: 1
 name: mediguard-ai
 type: space
 runtime: fastapi
-app: app:app
+app: server.app:app
 port: 7860
 
 description: >
