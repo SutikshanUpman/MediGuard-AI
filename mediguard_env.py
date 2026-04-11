@@ -4,7 +4,7 @@ MediGuard-AI Environment — OpenEnv-compliant RL environment.
 Wraps PatientSimulator to produce normalized observations, compute rewards,
 and support 3 hackathon tasks: suppression, deterioration, triage.
 
-OpenEnv spec: reset() → obs, step(action) → (obs, reward, done, info), state() → dict
+OpenEnv spec: reset() -> obs, step(action) -> (obs, reward, done, info), state() -> dict
 """
 
 from __future__ import annotations
@@ -40,11 +40,6 @@ class ObservationModel(BaseModel):
 
 
 class ActionModel(BaseModel):
-    """Schema for an action.
-
-    For suppression / deterioration: a single int in {0,1,2}.
-    For triage: a list of 4 ints, each in {0,1,2}.
-    """
     action: Union[int, List[int]] = Field(
         ...,
         description="0=Ignore, 1=Verify, 2=Alert. List[int] of length 4 for triage."
@@ -52,26 +47,15 @@ class ActionModel(BaseModel):
 
 
 class RewardModel(BaseModel):
-    """Schema for the reward signal returned by step()."""
-    reward: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Normalized reward in [0, 1]. "
-            "Reflects correctness of the agent's action given current patient condition. "
-            "1.0 = optimal action, 0.0 = worst possible action."
-        ),
-    )
-    done: bool = Field(..., description="True if the episode has ended (step >= 60).")
-    step: int = Field(..., ge=0, description="Current step number within the episode.")
+    reward: float = Field(..., ge=0.0, le=1.0)
+    done: bool = Field(...)
+    step: int = Field(..., ge=0)
 
 
 # ------------------------------------------------------------------ #
 #  Constants                                                         #
 # ------------------------------------------------------------------ #
 
-# Normalization ranges: (min, max)
 NORM_RANGES = {
     "heart_rate":       (30.0, 200.0),
     "systolic_bp":      (60.0, 220.0),
@@ -81,16 +65,13 @@ NORM_RANGES = {
     "temperature":      (34.0, 42.0),
 }
 
-# Ordered list of vital keys — used for consistent array indexing
 VITAL_KEYS = ["heart_rate", "systolic_bp", "diastolic_bp", "spo2", "respiratory_rate", "temperature"]
 
-# Task → patient_type mapping
 TASK_PATIENT_MAP = {
     "suppression":   "hypertensive",
     "deterioration": "deteriorating",
 }
 
-# Triage patient configs: (patient_type, seed_offset)
 TRIAGE_PATIENTS = [
     ("healthy",        0),
     ("post_op",        1),
@@ -98,9 +79,9 @@ TRIAGE_PATIENTS = [
     ("healthy",        3),
 ]
 
-EPISODE_LENGTH =60
-NUM_ACTIONS = 3          # Discrete(3): 0=Ignore, 1=Verify, 2=Alert
-HISTORY_LEN = 10         # Number of past timesteps kept in vitals_history
+EPISODE_LENGTH = 60
+NUM_ACTIONS = 3
+HISTORY_LEN = 10
 
 
 # ------------------------------------------------------------------ #
@@ -108,12 +89,9 @@ HISTORY_LEN = 10         # Number of past timesteps kept in vitals_history
 # ------------------------------------------------------------------ #
 
 class _PatientTracker:
-    """Maintains rolling baseline and vitals history for one patient."""
-
     def __init__(self, sim: PatientSimulator):
         self.sim = sim
         self.vitals_history: deque = deque(maxlen=HISTORY_LEN)
-        # Rolling accumulators — running sum and count for each vital
         self._running_sum = np.zeros(len(VITAL_KEYS), dtype=np.float64)
         self._running_count = 0
 
@@ -123,34 +101,26 @@ class _PatientTracker:
         self._running_sum[:] = 0.0
         self._running_count = 0
 
-    # ---- normalisation ---- #
     @staticmethod
     def _normalize(raw: Dict[str, float]) -> np.ndarray:
-        """Normalize raw vitals dict → numpy array in [0, 1]."""
         arr = np.empty(len(VITAL_KEYS), dtype=np.float64)
         for i, key in enumerate(VITAL_KEYS):
             lo, hi = NORM_RANGES[key]
             arr[i] = np.clip((raw[key] - lo) / (hi - lo), 0.0, 1.0)
         return arr
 
-    # ---- observation building ---- #
     def build_observation(self, step: int) -> Dict:
-        """Read current vitals from the simulator and return an obs dict."""
         raw_vitals = self.sim.get_vitals()
         norm = self._normalize(raw_vitals)
 
-        # Update rolling baseline
         self._running_sum += norm
         self._running_count += 1
         rolling_mean = self._running_sum / self._running_count
 
-        # Baseline delta: mean absolute deviation across all 6 vitals
         baseline_delta = float(np.clip(np.mean(np.abs(norm - rolling_mean)), 0.0, 1.0))
 
-        # Update vitals history
         self.vitals_history.append(norm.tolist())
 
-        # Pad history to HISTORY_LEN with zeros
         padded_history = [[0.0] * len(VITAL_KEYS)] * (HISTORY_LEN - len(self.vitals_history))
         padded_history += list(self.vitals_history)
 
@@ -176,49 +146,33 @@ class _PatientTracker:
 class MediGuardEnv:
     """
     OpenEnv-compliant RL environment for MediGuard-AI.
-
-    Supports three tasks:
-      - suppression:   single hypertensive patient, learn to suppress false alarms
-      - deterioration: single deteriorating patient, detect sepsis drift
-      - triage:        4 concurrent patients, prioritise limited attention
-
-    Actions are Discrete(3) per patient:
-      0 = Ignore   1 = Verify   2 = Alert
-
     Episode length: 60 steps.
     """
 
     def __init__(self, task: str = "suppression", seed: int = 42):
-        assert task in ("suppression", "deterioration", "triage"), (
-            f"Unknown task '{task}'. Must be one of: suppression, deterioration, triage."
-        )
+        # FIX 1: ValueError instead of AssertionError — cleaner for validator
+        if task not in ("suppression", "deterioration", "triage"):
+            raise ValueError(
+                f"Unknown task '{task}'. Must be one of: suppression, deterioration, triage."
+            )
         self._task = task
         self._seed = seed
         self._step = 0
-
-        # Will be populated in reset()
         self._trackers: List[_PatientTracker] = []
         self._is_triage = (task == "triage")
 
-        # Reward functions (one per patient for triage, one for single-patient)
         if self._is_triage:
             self._reward_fns = [RewardFunction() for _ in TRIAGE_PATIENTS]
         else:
             self._reward_fns = [RewardFunction()]
-
-        # Trackers are populated on the first explicit reset() call.
-        # Do NOT call reset() here — run_episode() calls it after construction,
-        # and a double reset desynchronises the simulator timestep from _step.
 
     # -------------------------------------------------------------- #
     #  Public API                                                     #
     # -------------------------------------------------------------- #
 
     def reset(self) -> Union[Dict, List[Dict]]:
-        """Reset environment to initial state and return first observation."""
         self._step = 0
 
-        # Reset reward functions
         for rf in self._reward_fns:
             rf.reset()
 
@@ -231,39 +185,32 @@ class MediGuardEnv:
             patient_type = TASK_PATIENT_MAP[self._task]
             sims = [PatientSimulator(patient_type=patient_type, seed=self._seed)]
 
-        # Build / reset trackers
         self._trackers = [_PatientTracker(sim) for sim in sims]
 
-        # Advance simulators one tick to get the first set of readings
         for tr in self._trackers:
             tr.sim.tick()
 
-        # Build initial observations
         obs_list = [tr.build_observation(self._step) for tr in self._trackers]
 
         return obs_list if self._is_triage else obs_list[0]
 
     def step(self, action: Union[int, List[int]]):
-        """
-        Execute one environment step.
-
-        Args:
-            action: int for single-patient tasks, List[int] of length 4 for triage.
-
-        Returns:
-            (observation, reward, done, info)
-        """
-        # Validate action shape
+        # FIX 2: Safe coercion instead of assert — validator sends various types,
+        # an AssertionError would crash the entire episode
         if self._is_triage:
-            assert isinstance(action, (list, tuple)) and len(action) == len(self._trackers), (
-                f"Triage task requires a list of {len(self._trackers)} actions, got {action}"
-            )
-            actions = list(action)
+            if isinstance(action, (list, tuple)):
+                actions = [max(0, min(2, int(a))) for a in action]
+            else:
+                actions = [max(0, min(2, int(action)))] * len(self._trackers)
+            # Pad or trim to exact count
+            while len(actions) < len(self._trackers):
+                actions.append(0)
+            actions = actions[:len(self._trackers)]
         else:
-            assert isinstance(action, (int, np.integer)), (
-                f"Single-patient task requires an int action, got {type(action)}"
-            )
-            actions = [int(action)]
+            if isinstance(action, (list, tuple)):
+                actions = [max(0, min(2, int(action[0])))]
+            else:
+                actions = [max(0, min(2, int(action)))]
 
         # 1. Tick all simulators
         for tr in self._trackers:
@@ -297,7 +244,6 @@ class MediGuardEnv:
         return obs_out, reward, done, info
 
     def state(self) -> Dict:
-        """Return current environment state for debugging / grading."""
         if self._is_triage:
             patient_type = [pt for pt, _ in TRIAGE_PATIENTS]
             det_severity = [tr.sim.get_state().get("deterioration_severity", 0.0)
@@ -322,35 +268,26 @@ class MediGuardEnv:
     # -------------------------------------------------------------- #
 
     def _classify_condition(self, tracker: _PatientTracker) -> PatientCondition:
-        """Map continuous vitals to a discrete PatientCondition enum."""
         state = tracker.sim.get_state()
         det_severity = state.get("deterioration_severity", 0.0)
         activity = tracker.sim.get_activity()
 
-        # Emergency: high deterioration severity
         if det_severity > 0.5:
-            # Drug-masked: activity can hide symptoms during real emergencies
-            if activity in (2, 3):  # ambulating or distressed
+            if activity in (2, 3):
                 return PatientCondition.DRUG_MASKED
             return PatientCondition.EMERGENCY
 
-        # Borderline: moderate deterioration
         if det_severity > 0.2:
             return PatientCondition.BORDERLINE
 
-        # For patients WITHOUT active deterioration, only flag truly
-        # extreme vitals (much higher thresholds to avoid catching
-        # hypertensive patients' naturally elevated baselines)
         vitals = tracker.sim.get_vitals()
         spo2 = vitals.get("spo2", 97)
         temp = vitals.get("temperature", 37.0)
         hr = vitals.get("heart_rate", 75)
 
-        # Only truly critical vitals (well beyond any patient's normal)
         if spo2 < 80 or temp > 41.0 or hr > 170 or hr < 35:
             return PatientCondition.EMERGENCY
 
-        # Clearly abnormal (but not so tight it catches normal variation)
         if spo2 < 85 or temp > 39.5 or hr > 150 or hr < 40:
             return PatientCondition.BORDERLINE
 
@@ -361,9 +298,7 @@ class MediGuardEnv:
     # -------------------------------------------------------------- #
 
     def _compute_reward(self, action, obs) -> float:
-        """Compute reward using the RewardFunction with condition + activity context."""
         if self._is_triage:
-            # Multi-patient: average reward across patients
             rewards = []
             actions = action if isinstance(action, list) else [action]
             for i, (act, tracker, rf) in enumerate(
@@ -376,13 +311,11 @@ class MediGuardEnv:
                 rewards.append(r)
             raw_reward = sum(rewards) / len(rewards)
         else:
-            # Single patient
             condition = self._classify_condition(self._trackers[0])
             activity = self._trackers[0].sim.get_activity()
             action_enum = Action(action)
             raw_reward = self._reward_fns[0].compute(action_enum, condition, activity=activity)
 
-        # Normalize to [0, 1]: raw range is [-1.6, 1.6]
         normalized = (raw_reward + 1.6) / 3.2
         return max(0.0, min(1.0, normalized))
 
@@ -391,17 +324,14 @@ class MediGuardEnv:
     # -------------------------------------------------------------- #
 
     def false_alarm_rate_grader(self) -> float:
-        """Grade suppression task using task1_suppression grader."""
         stats = self._reward_fns[0].get_stats()
         return grade_suppression(stats)
 
     def deterioration_grader(self) -> float:
-        """Grade deterioration task using task2_deterioration grader."""
         stats = self._reward_fns[0].get_stats()
         return grade_deterioration(stats)
 
     def triage_grader(self) -> float:
-        """Grade triage task using task3_triage grader."""
         stats_list = [rf.get_stats() for rf in self._reward_fns]
         return grade_triage(stats_list)
 
@@ -427,7 +357,7 @@ if __name__ == "__main__":
             if task == "triage":
                 action = [1, 0, 1, 0]
             else:
-                action = 1  # Verify
+                action = 1
 
             obs, reward, done, info = env.step(action)
 
@@ -446,9 +376,9 @@ if __name__ == "__main__":
                 )
 
         st = env.state()
-        print(f"  state → step={st['step']}, done={st['done']}, "
+        print(f"  state -> step={st['step']}, done={st['done']}, "
               f"deterioration_severity={st['deterioration_severity']}")
 
     print(f"\n{'=' * 65}")
-    print("✅  All smoke tests passed.")
+    print("All smoke tests passed.")
     print(f"{'=' * 65}")
