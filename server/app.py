@@ -6,7 +6,7 @@ FastAPI (REST endpoints for OpenEnv validator) + Gradio (interactive UI)
 import json
 import os
 import sys
-
+import threading
 import gradio as gr
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -25,18 +25,24 @@ from inference import (
 _llm_available = API_KEY not in (None, "", "dummy")
 
 # ── Global episode state ───────────────────────────────────────────
-_env            = None
-_current_task   = None
-_step_count     = 0
-_total_reward   = 0.0
-_episode_log    = []
-_conv_history   = []
+# P1 fix: guard all reads/writes of shared REST state with a lock.
+# Gradio callbacks are single-threaded (GIL-safe via queue), but the
+# FastAPI /reset and /step endpoints are called from async workers and
+# can race each other if the validator retries or sends concurrent
+# requests. The lock prevents _env/_last_obs corruption mid-episode.
+_state_lock   = threading.Lock()
+
+_env          = None
+_current_task = None
+_step_count   = 0
+_total_reward = 0.0
+_episode_log  = []
+_conv_history = []
 _vitals_history = []
-_last_obs       = None
+_last_obs     = None
 
 ACTION_LABELS = {0: "IGNORE", 1: "VERIFY", 2: "ALERT"}
-ACTION_EMOJI  = {0: "😴", 1: "🔍", 2: "🚨"}
-
+ACTION_EMOJI  = {0: "😴",     1: "🔍",     2: "🚨"}
 ACTIVITY_EMOJI = {
     0: "Resting",
     1: "Eating",
@@ -53,7 +59,7 @@ if _llm_available:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Observation formatting
+# Observation formatting
 # ══════════════════════════════════════════════════════════════════
 
 def _risk_tag(delta, spo2, temp):
@@ -65,57 +71,58 @@ def _risk_tag(delta, spo2, temp):
 
 
 def _fmt_single(obs: dict) -> str:
-    hr   = obs.get("heart_rate", 0)
-    spo2 = obs.get("spo2", 0)
-    bp   = obs.get("systolic_bp", 0)
-    temp = obs.get("temperature", 0)
-    rr   = obs.get("respiratory_rate", 0)
-    dbp  = obs.get("diastolic_bp", 0)
-    delta= obs.get("baseline_delta", 0)
-    hours= obs.get("hours_observed", 0)
-    act  = ACTIVITY_EMOJI.get(obs.get("activity", 0), "Unknown")
+    hr    = obs.get("heart_rate",       0)
+    spo2  = obs.get("spo2",            0)
+    bp    = obs.get("systolic_bp",     0)
+    temp  = obs.get("temperature",     0)
+    rr    = obs.get("respiratory_rate", 0)
+    dbp   = obs.get("diastolic_bp",    0)
+    delta = obs.get("baseline_delta",  0)
+    hours = obs.get("hours_observed",  0)
+    act   = ACTIVITY_EMOJI.get(obs.get("activity", 0), "Unknown")
 
-    hr_raw   = int(30  + hr   * 170)
-    spo2_raw = int(70  + spo2 * 30)
-    bp_raw   = int(60  + bp   * 160)
-    dbp_raw  = int(40  + dbp  * 80)
+    hr_raw   = int(30 + hr   * 170)
+    spo2_raw = int(70 + spo2 * 30)
+    bp_raw   = int(60 + bp   * 160)
+    dbp_raw  = int(40 + dbp  * 80)
     temp_raw = round(34 + temp * 8, 1)
-    rr_raw   = int(5   + rr   * 35)
+    rr_raw   = int(5  + rr   * 35)
+
     risk     = _risk_tag(delta, spo2, temp)
     risk_map = {"CRITICAL": "[CRITICAL]", "BORDERLINE": "[BORDERLINE]", "STABLE": "[STABLE]"}
 
     lines = [
         "  PATIENT VITALS",
         "  " + "─"*40,
-        f"  Heart Rate         {hr_raw:>4} bpm",
-        f"  SpO2               {spo2_raw:>4} %",
-        f"  Blood Pressure     {bp_raw}/{dbp_raw} mmHg",
-        f"  Temperature        {temp_raw} C",
-        f"  Resp Rate          {rr_raw} /min",
+        f"  Heart Rate        {hr_raw:>4} bpm",
+        f"  SpO2              {spo2_raw:>4} %",
+        f"  Blood Pressure    {bp_raw}/{dbp_raw} mmHg",
+        f"  Temperature       {temp_raw} C",
+        f"  Resp Rate         {rr_raw} /min",
         "  " + "─"*40,
-        f"  Baseline Delta     {delta:.3f}",
-        f"  Time Observed      {hours:.1f} hours",
-        f"  Activity           {act}",
+        f"  Baseline Delta    {delta:.3f}",
+        f"  Time Observed     {hours:.1f} hours",
+        f"  Activity          {act}",
         "  " + "─"*40,
-        f"  Status             {risk_map[risk]}",
+        f"  Status            {risk_map[risk]}",
     ]
     return "\n".join(lines)
 
 
 def _fmt_triage(obs_list: list) -> str:
-    lines = ["  4-PATIENT TRIAGE BOARD", "  " + "─"*42]
+    lines    = ["  4-PATIENT TRIAGE BOARD", "  " + "─"*42]
     risk_map = {"CRITICAL": "[CRITICAL]", "BORDERLINE": "[BORDERLINE]", "STABLE": "[STABLE]"}
     for i, obs in enumerate(obs_list):
-        hr   = obs.get("heart_rate", 0)
-        spo2 = obs.get("spo2", 0)
-        temp = obs.get("temperature", 0)
-        delta= obs.get("baseline_delta", 0)
-        act  = ACTIVITY_EMOJI.get(obs.get("activity", 0), "Unknown")
-        risk = _risk_tag(delta, spo2, temp)
+        hr    = obs.get("heart_rate",   0)
+        spo2  = obs.get("spo2",         0)
+        temp  = obs.get("temperature",  0)
+        delta = obs.get("baseline_delta", 0)
+        act   = ACTIVITY_EMOJI.get(obs.get("activity", 0), "Unknown")
+        risk  = _risk_tag(delta, spo2, temp)
         lines += [
-            f"  Patient {i}   {risk_map[risk]}",
-            f"    HR {int(30+hr*170)} bpm   SpO2 {int(70+spo2*30)}%   "
-            f"Temp {34+temp*8:.1f}C   Delta {delta:.2f}",
+            f"  Patient {i}  {risk_map[risk]}",
+            f"    HR {int(30+hr*170)} bpm  SpO2 {int(70+spo2*30)}%  "
+            f"Temp {34+temp*8:.1f}C  Delta {delta:.2f}",
             f"    Activity: {act}",
             "  " + "─"*40,
         ]
@@ -123,7 +130,7 @@ def _fmt_triage(obs_list: list) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Agent helpers
+# Agent helpers
 # ══════════════════════════════════════════════════════════════════
 
 def _agent_action(obs, task, agent_mode):
@@ -144,38 +151,39 @@ def _agent_action(obs, task, agent_mode):
 
 
 def _compute_score(env, task):
-    fn = {"suppression": env.false_alarm_rate_grader,
-          "deterioration": env.deterioration_grader,
-          "triage": env.triage_grader}.get(task)
+    fn = {
+        "suppression":  env.false_alarm_rate_grader,
+        "deterioration": env.deterioration_grader,
+        "triage":        env.triage_grader,
+    }.get(task)
     return float(fn()) if fn else 0.0
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Demo functions (Gradio callbacks)
+# Demo functions (Gradio callbacks)
 # ══════════════════════════════════════════════════════════════════
 
 def demo_reset(task, seed, agent_mode):
     global _env, _current_task, _step_count, _total_reward
     global _episode_log, _conv_history, _vitals_history, _last_obs
 
-    _env = MediGuardEnv(task=task, seed=int(seed))
+    _env          = MediGuardEnv(task=task, seed=int(seed))
     _current_task = task
-    _step_count = 0
+    _step_count   = 0
     _total_reward = 0.0
-    _episode_log = []
+    _episode_log  = []
     _conv_history = []
     _vitals_history = []
-
-    obs = _env.reset()
-    _last_obs = obs
+    obs           = _env.reset()
+    _last_obs     = obs
 
     obs_display = _fmt_triage(obs) if isinstance(obs, list) else _fmt_single(obs)
-    _episode_log.append(f"[RESET] task={task}  seed={seed}  agent={agent_mode}")
+    _episode_log.append(f"[RESET] task={task} seed={seed} agent={agent_mode}")
 
-    manual = agent_mode == "Manual"
-    is_tri = task == "triage"
+    manual     = agent_mode == "Manual"
+    is_tri     = task == "triage"
     difficulty = {"suppression": "Easy", "deterioration": "Medium", "triage": "Hard"}[task]
-    status = f"READY   {task.upper()}  [{difficulty}]   Seed {seed}   {agent_mode}"
+    status     = f"READY  {task.upper()} [{difficulty}]  Seed {seed}  {agent_mode}"
 
     return (
         status, obs_display,
@@ -201,7 +209,8 @@ def demo_step(action_radio, triage_txt, agent_mode):
         if task == "triage":
             try:
                 parsed = [max(0, min(2, int(a.strip()))) for a in triage_txt.split(",")]
-                while len(parsed) < 4: parsed.append(0)
+                while len(parsed) < 4:
+                    parsed.append(0)
                 action = parsed[:4]
             except ValueError:
                 action = [0, 0, 0, 0]
@@ -215,44 +224,44 @@ def demo_step(action_radio, triage_txt, agent_mode):
         action, reasoning, used_llm = _agent_action(obs, task, agent_mode)
 
     obs_next, reward, done, info = _env.step(action)
-    _step_count += 1
+    _step_count   += 1
     _total_reward += reward
-    mean_r = _total_reward / _step_count
-    _last_obs = obs_next
+    mean_r         = _total_reward / _step_count
+    _last_obs      = obs_next
 
     if task == "triage":
         obs_text = triage_obs_to_message(
             obs_next if isinstance(obs_next, list) else [obs_next], _conv_history)
     else:
         obs_text = obs_to_user_message(obs_next, task, _vitals_history, _conv_history)
-        hist = obs_next.get("vitals_history", [])
-        if hist:
-            for entry in reversed(hist):
-                if any(v != 0.0 for v in entry):
-                    _vitals_history.append(entry)
-                    break
-            _vitals_history = _vitals_history[-8:]
+
+    hist = obs_next.get("vitals_history", [])
+    if hist:
+        for entry in reversed(hist):
+            if any(v != 0.0 for v in entry):
+                _vitals_history.append(entry)
+                break
+    _vitals_history = _vitals_history[-8:]
 
     _conv_history.append({
         "obs_text": obs_text,
         "response": json.dumps({"action": action, "reasoning": reasoning}),
-        "action": action, "reward": reward,
+        "action":   action,
+        "reward":   reward,
     })
     if len(_conv_history) > 4:
         _conv_history = _conv_history[-4:]
 
     if isinstance(action, list):
-        act_str = "  ".join(
+        act_str = " ".join(
             f"P{i}:{ACTION_EMOJI.get(a,'?')}{ACTION_LABELS.get(a,'?')}"
             for i, a in enumerate(action))
     else:
         act_str = f"{ACTION_EMOJI.get(action,'?')} {ACTION_LABELS.get(action,'?')}"
 
     obs_display = _fmt_triage(obs_next) if isinstance(obs_next, list) else _fmt_single(obs_next)
-
-    tag = "LLM" if used_llm else ("RULE" if agent_mode == "Rule-Based" else "USER")
-    _episode_log.append(
-        f"[{_step_count:03d}] {tag}  {act_str[:38]}  R={reward:+.3f}")
+    tag         = "LLM" if used_llm else ("RULE" if agent_mode == "Rule-Based" else "USER")
+    _episode_log.append(f"[{_step_count:03d}] {tag}  {act_str[:38]}  R={reward:+.3f}")
     if len(_episode_log) > 200:
         _episode_log = _episode_log[-200:]
 
@@ -260,30 +269,36 @@ def demo_step(action_radio, triage_txt, agent_mode):
     is_tri = task == "triage"
 
     if done:
-        score = _compute_score(_env, task)
-        status = f"COMPLETE   Score: {score:.4f}   Mean Reward: {mean_r:.3f}   Steps: {_step_count}"
-        _episode_log += ["=" * 50,
-                         f"  FINAL SCORE  :  {score:.4f}",
-                         f"  MEAN REWARD  :  {mean_r:.4f}",
-                         "=" * 50]
+        score  = _compute_score(_env, task)
+        status = f"COMPLETE  Score: {score:.4f}  Mean Reward: {mean_r:.3f}  Steps: {_step_count}"
+        _episode_log += [
+            "=" * 50,
+            f"  FINAL SCORE : {score:.4f}",
+            f"  MEAN REWARD : {mean_r:.4f}",
+            "=" * 50,
+        ]
         return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
                 f"{_step_count}/60", "\n".join(_episode_log[-80:]),
                 gr.update(interactive=False),
-                gr.update(visible=manual and not is_tri), gr.update(visible=manual and is_tri))
+                gr.update(visible=manual and not is_tri),
+                gr.update(visible=manual and is_tri))
 
-    status = f"Step {_step_count}/60   Last Reward: {reward:+.3f}   Mean: {mean_r:.3f}"
+    status = f"Step {_step_count}/60  Last Reward: {reward:+.3f}  Mean: {mean_r:.3f}"
     return (status, obs_display, act_str, f"{reward:+.3f}", f"{mean_r:.4f}",
             f"{_step_count}/60", "\n".join(_episode_log[-80:]),
             gr.update(interactive=True),
-            gr.update(visible=manual and not is_tri), gr.update(visible=manual and is_tri))
+            gr.update(visible=manual and not is_tri),
+            gr.update(visible=manual and is_tri))
 
 
 def demo_run_all(_):
     import subprocess
     try:
-        r = subprocess.run([sys.executable, "inference.py"],
-                           capture_output=True, text=True,
-                           env=os.environ.copy(), timeout=55)
+        r = subprocess.run(
+            [sys.executable, "inference.py"],
+            capture_output=True, text=True,
+            env=os.environ.copy(), timeout=55,
+        )
         return (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "No output."
     except subprocess.TimeoutExpired:
         return "Timed out after 15 min."
@@ -302,7 +317,7 @@ def on_task_change(task, agent_mode):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  CSS
+# CSS
 # ══════════════════════════════════════════════════════════════════
 
 CSS = """
@@ -314,7 +329,6 @@ html, body,
 .gradio-container * {
     color-scheme: light !important;
 }
-
 body,
 .gradio-container {
     background: #f0f4ff !important;
@@ -349,7 +363,6 @@ body,
     letter-spacing: 1px;
 }
 .app-header .tagline { color: rgba(255,255,255,0.75) !important; font-size: 0.9em; margin: 0 0 18px; }
-
 .pill {
     display: inline-block;
     border-radius: 30px;
@@ -426,7 +439,6 @@ body,
     transition: all .2s !important;
 }
 .btn-reset:hover { transform: translateY(-2px) !important; box-shadow: 0 8px 24px rgba(79,70,229,.55) !important; }
-
 .btn-step {
     background: linear-gradient(135deg,#059669,#10b981) !important;
     border: none !important; border-radius: 12px !important;
@@ -436,7 +448,6 @@ body,
     transition: all .2s !important;
 }
 .btn-step:hover { transform: translateY(-1px) !important; }
-
 .btn-run {
     background: linear-gradient(135deg,#b45309,#d97706) !important;
     border: none !important; border-radius: 12px !important;
@@ -471,6 +482,7 @@ body,
     background: #ffffff !important;
     color: #1a1f3a !important;
 }
+
 /* Dropdown panel */
 .gradio-container .options,
 .gradio-container ul.options {
@@ -564,13 +576,14 @@ body,
     color: #1a1f3a !important;
 }
 
-::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar       { width: 5px; }
 ::-webkit-scrollbar-track { background: #e8edf8; }
 ::-webkit-scrollbar-thumb { background: #d0d8f0; border-radius: 3px; }
 """
 
+
 # ══════════════════════════════════════════════════════════════════
-#  HTML blocks
+# HTML blocks
 # ══════════════════════════════════════════════════════════════════
 
 _llm_pill = (
@@ -654,8 +667,9 @@ SCORING_HTML = f"""
 </div>
 """
 
+
 # ══════════════════════════════════════════════════════════════════
-#  Gradio layout
+# Gradio layout
 # ══════════════════════════════════════════════════════════════════
 
 with gr.Blocks(
@@ -693,9 +707,9 @@ with gr.Blocks(
 
             with gr.Row():
                 metric_step   = gr.Textbox(value="0 / 60", label="Step",        interactive=False)
-                metric_reward = gr.Textbox(value="—",        label="Last Reward", interactive=False)
-                metric_mean   = gr.Textbox(value="—",        label="Mean Reward", interactive=False)
-                metric_action = gr.Textbox(value="—",        label="Last Action", interactive=False)
+                metric_reward = gr.Textbox(value="—",      label="Last Reward", interactive=False)
+                metric_mean   = gr.Textbox(value="—",      label="Mean Reward", interactive=False)
+                metric_action = gr.Textbox(value="—",      label="Last Action", interactive=False)
 
             status_out = gr.Textbox(
                 label="Status",
@@ -705,9 +719,9 @@ with gr.Blocks(
             )
 
             with gr.Row(equal_height=False):
-
                 with gr.Column(scale=1, min_width=270):
                     gr.HTML('<div class="sec-h">Configuration</div>')
+
                     task_dd = gr.Dropdown(
                         choices=["suppression", "deterioration", "triage"],
                         value="suppression",
@@ -726,14 +740,14 @@ with gr.Blocks(
                         ),
                     )
                     reset_btn = gr.Button(
-                        "🔄  Reset Environment",
+                        "🔄 Reset Environment",
                         variant="primary", size="lg",
                         elem_classes=["btn-reset"],
                     )
 
                     gr.HTML('<div class="sec-h" style="margin-top:18px">Action</div>')
                     gr.Markdown(
-                        "_LLM and Rule-Based agents decide automatically.  \n"
+                        "_LLM and Rule-Based agents decide automatically. \n"
                         "Action controls only appear in Manual mode._"
                     )
 
@@ -752,7 +766,7 @@ with gr.Blocks(
                         )
 
                     step_btn = gr.Button(
-                        "▶  Next Step",
+                        "▶ Next Step",
                         variant="secondary", size="lg",
                         interactive=False,
                         elem_classes=["btn-step"],
@@ -781,7 +795,7 @@ with gr.Blocks(
                 "Requires `HF_TOKEN`."
             )
             run_all_btn = gr.Button(
-                "🏃  Run Full Inference (All 3 Tasks)",
+                "🏃 Run Full Inference (All 3 Tasks)",
                 variant="stop", elem_classes=["btn-run"],
             )
             full_log = gr.Textbox(
@@ -801,9 +815,9 @@ with gr.Blocks(
 
 | Task | Patients | Challenge |
 |------|:--------:|-----------|
-| 🟢 Suppression | 1 hypertensive | His high BP is *normal* — don't alarm |
+| 🟢 Suppression  | 1 hypertensive | His high BP is *normal* — don't alarm |
 | 🟡 Deterioration | 1 sepsis patient | Catch the trend before crisis |
-| 🔴 Triage | 4 simultaneous | Rank by urgency — ordering matters |
+| 🔴 Triage       | 4 simultaneous | Rank by urgency — ordering matters |
 
 ### Action Space `Discrete(3)`
 
@@ -811,7 +825,7 @@ with gr.Blocks(
 |:----:|--------|----------|
 | `0` | 😴 IGNORE | Vitals match this patient's normal baseline |
 | `1` | 🔍 VERIFY | Mild deviation — alert the nurse |
-| `2` | 🚨 ALERT | Genuine emergency — call the doctor now |
+| `2` | 🚨 ALERT  | Genuine emergency — call the doctor now |
 
 ### Observation Fields (10 per patient)
 
@@ -823,7 +837,7 @@ with gr.Blocks(
 `hours_observed` · `activity` (0=resting 1=eating 2=walking 3=distressed 4=falling)
 
 `vitals_history` — last 10 readings for trend detection
-                    """)
+""")
 
                 with gr.Column():
                     gr.HTML(SCORING_HTML)
@@ -833,21 +847,21 @@ with gr.Blocks(
 Task-specific system prompts + 4-turn sliding conversation window for pseudo-online learning.
 
 ```
-System Prompt (task rules + thresholds)
-+ Vitals trend table (last 8 readings)
+System Prompt  (task rules + thresholds)
++ Vitals trend table  (last 8 readings)
 + Recent decisions and their rewards
 → LLM picks: IGNORE / VERIFY / ALERT
 → Falls back to rule-based on any error
 ```
 
 **Models in use:**
-- Suppression → `{MODEL_NAME}`
+- Suppression   → `{MODEL_NAME}`
 - Deterioration → `{MODEL_NAME}`
-- Triage → `{MODEL_NAME}`
+- Triage        → `{MODEL_NAME}`
 
 **LLM:** {"✅ Connected" if _llm_available else "❌ Offline — set `HF_TOKEN`"}
 &nbsp;·&nbsp; **Endpoint:** `{API_BASE_URL}`
-                    """)
+""")
 
     # ── Event wiring ──────────────────────────────────────────────
     _shared = [
@@ -859,20 +873,21 @@ System Prompt (task rules + thresholds)
     ]
 
     reset_btn.click(demo_reset, [task_dd, seed_num, agent_radio], _shared)
-    step_btn.click(demo_step, [action_radio, triage_txt, agent_radio], _shared)
+    step_btn.click(demo_step,   [action_radio, triage_txt, agent_radio], _shared)
     agent_radio.change(on_agent_change, [agent_radio, task_dd], [single_action_row, triage_action_row])
-    task_dd.change(on_task_change, [task_dd, agent_radio], [single_action_row, triage_action_row])
+    task_dd.change(on_task_change,      [task_dd, agent_radio], [single_action_row, triage_action_row])
     run_all_btn.click(demo_run_all, [agent_radio], [full_log])
 
 
 # ══════════════════════════════════════════════════════════════════
-#  FastAPI app — mounts Gradio + exposes OpenEnv REST endpoints
+# FastAPI app — mounts Gradio + exposes OpenEnv REST endpoints
 # ══════════════════════════════════════════════════════════════════
 
 app = FastAPI(title="MediGuard-AI")
 
 
 # ── /reset ────────────────────────────────────────────────────────
+
 @app.post("/reset")
 async def api_reset(request: Request):
     """OpenEnv-spec reset. Accepts optional {task, seed} JSON body."""
@@ -887,24 +902,27 @@ async def api_reset(request: Request):
     task = body.get("task", "suppression")
     seed = int(body.get("seed", 42))
 
-    _env = MediGuardEnv(task=task, seed=seed)
-    _current_task = task
-    _step_count = 0
-    _total_reward = 0.0
-    _episode_log = []
-    _conv_history = []
-    _vitals_history = []
-
-    obs = _env.reset()
-    _last_obs = obs
+    # P1 fix: acquire lock before touching shared state so a concurrent
+    # /step from a validator retry can't read a half-initialised episode.
+    with _state_lock:
+        _env          = MediGuardEnv(task=task, seed=seed)
+        _current_task = task
+        _step_count   = 0
+        _total_reward = 0.0
+        _episode_log  = []
+        _conv_history = []
+        _vitals_history = []
+        obs           = _env.reset()
+        _last_obs     = obs
 
     return JSONResponse({
         "observation": obs if not isinstance(obs, list) else obs,
-        "info": {"task": task, "seed": seed}
+        "info":        {"task": task, "seed": seed},
     })
 
 
 # ── /step ─────────────────────────────────────────────────────────
+
 @app.post("/step")
 async def api_step(request: Request):
     """OpenEnv-spec step. Accepts {action} JSON body."""
@@ -919,9 +937,9 @@ async def api_step(request: Request):
         body = {}
 
     action_raw = body.get("action", 1)
-    task = _current_task or "suppression"
+    task       = _current_task or "suppression"
 
-    # KEY FIX: robust action parsing for any format Nemotron might send
+    # Robust action parsing for any format the validator might send
     try:
         if task == "triage":
             if isinstance(action_raw, list):
@@ -945,20 +963,24 @@ async def api_step(request: Request):
     except Exception:
         action = [1, 1, 1, 1] if task == "triage" else 1
 
-    obs_next, reward, done, info = _env.step(action)
-    _step_count += 1
-    _total_reward += reward
-    _last_obs = obs_next
+    # P1 fix: lock the entire read-modify-write of the episode state so
+    # concurrent validator retries can't interleave steps from two requests.
+    with _state_lock:
+        obs_next, reward, done, info = _env.step(action)
+        _step_count   += 1
+        _total_reward += reward
+        _last_obs      = obs_next
 
     return JSONResponse({
         "observation": obs_next,
-        "reward": reward,
-        "done": done,
-        "info": info,
+        "reward":      reward,
+        "done":        done,
+        "info":        info,
     })
 
 
 # ── /state ────────────────────────────────────────────────────────
+
 @app.get("/state")
 async def api_state():
     """OpenEnv-spec state."""
@@ -968,38 +990,42 @@ async def api_state():
 
 
 # ── /health ───────────────────────────────────────────────────────
+
 @app.get("/health")
 async def api_health():
     return JSONResponse({"status": "ok", "llm_available": _llm_available})
 
-# ── /score ───────────────────────────────────────────────────────
+
+# ── /score ────────────────────────────────────────────────────────
+
 @app.get("/score")
 async def api_score():
-    """Fast scoring endpoint — returns current grader scores without running a new episode."""
+    """Returns current grader scores without running a new episode."""
     if _env is None:
         return JSONResponse({"error": "call /reset first"}, status_code=400)
     try:
         scores = {
-            "suppression":   float(_env.false_alarm_rate_grader()) if _current_task == "suppression" else None,
+            "suppression":   float(_env.false_alarm_rate_grader()) if _current_task == "suppression"  else None,
             "deterioration": float(_env.deterioration_grader())    if _current_task == "deterioration" else None,
-            "triage":        float(_env.triage_grader())           if _current_task == "triage" else None,
+            "triage":        float(_env.triage_grader())           if _current_task == "triage"        else None,
         }
         return JSONResponse({"scores": scores, "task": _current_task})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-# ── Mount Gradio under /gradio, also serve it at root ─────────────
+
+# ── Mount Gradio at root ───────────────────────────────────────────
+
 gradio_app_mounted = gr.mount_gradio_app(app, gradio_app, path="/")
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Entry point
+# Entry point
 # ══════════════════════════════════════════════════════════════════
 
-def main():
-    port = int(os.getenv("PORT", 7860))
-    host = "0.0.0.0" if (os.getenv("SPACE_ID") or os.getenv("DOCKER")) else "127.0.0.1"
-    uvicorn.run(app, host=host, port=port)
-
 if __name__ == "__main__":
-    main()
+    port = int(os.getenv("PORT", 7860))
+    is_hf = os.getenv("SPACE_ID") or os.getenv("HF_SPACE_ID") or os.getenv("SYSTEM_SPACES")
+    host  = "0.0.0.0" if is_hf else "127.0.0.1"
+    print(f"[STARTUP] MediGuard-AI starting on {host}:{port}", flush=True)
+    uvicorn.run(app, host=host, port=port, log_level="info")
