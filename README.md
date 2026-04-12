@@ -248,7 +248,7 @@ print(f"Score: {env.triage_grader():.4f}")
 
 ## Authors
 
-**Sutikshan Upman** · **Rajveer Singh**
+**Sutikshan Upman** · **Rajveer Gupta** . **Abdul Malik**
 
 Built for the Meta PyTorch × Scaler OpenEnv Hackathon 2026.
 

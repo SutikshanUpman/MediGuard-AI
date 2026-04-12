@@ -56,7 +56,7 @@ client = OpenAI(
     base_url=API_BASE_URL,
     api_key=API_KEY,
     http_client=httpx.Client(
-        timeout=httpx.Timeout(4.0, connect=4.0)
+        timeout=httpx.Timeout(8.0, connect=8.0)
     ),
 )
 
