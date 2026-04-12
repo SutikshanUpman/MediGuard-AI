@@ -197,6 +197,23 @@ class PatientSimulator:
                     modified[spike_target] += self.rng.uniform(20, 40)
             return modified
 
+        # Hypertensive patient: inject a genuine emergency spike at a fixed
+        # window (timesteps 38–45) so the Task 1 grader always has at least
+        # one real emergency to detect, preventing the trivial "always IGNORE"
+        # exploit that scored ~1.0 on the no-emergency grader branch.
+        if self.patient_type == "hypertensive":
+            if 38 <= self.timestep <= 45:
+                modified = vitals.copy()
+                # Sudden hypertensive crisis: extreme HR + SpO2 crash
+                modified["heart_rate"] += 65.0 + self.rng.normal(0, 3.0)
+                modified["spo2"]       -= 14.0 + self.rng.normal(0, 1.5)
+                modified["systolic_bp"] += 35.0 + self.rng.normal(0, 4.0)
+                self.deterioration_severity = 0.75   # triggers EMERGENCY in classifier
+            else:
+                self.deterioration_severity = 0.0
+                modified = vitals.copy()
+            return modified
+
         if self.patient_type != "deteriorating":
             return vitals
 

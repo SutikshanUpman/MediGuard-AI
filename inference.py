@@ -73,7 +73,7 @@ ACTIVITY_NAMES = {
 }
 
 BASELINE_SCORES = {
-    "suppression":   1.0000,
+    "suppression":   0.6500,   # updated: spike injection means grader now uses F1 branch
     "deterioration": 0.3931,
     "triage":        0.3073,
 }
@@ -371,7 +371,7 @@ def openenv_validate() -> bool:
     with open("openenv.yaml", "r") as f:
         spec = yaml.safe_load(f)
 
-    required = ["name", "version", "tasks", "action_space", "observation_space"]
+    required = ["name", "spec_version", "tasks", "action_space", "observation_space"]
     for field in required:
         if field not in spec:
             print(f"[VALIDATE] fail missing field: {field}", flush=True)
