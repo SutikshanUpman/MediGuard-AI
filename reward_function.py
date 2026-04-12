@@ -48,45 +48,46 @@ REWARD_TABLE = {
 
 # Activity context multipliers — the key insight:
 # Same vital sign means different things depending on what the patient is doing.
-#   HR 130 while walking → expected (low multiplier, discount the anomaly)
+#   HR 130 while walking    → expected (low multiplier, discount the anomaly)
 #   HR 130 while lying still → emergency (high multiplier, amplify the anomaly)
 ACTIVITY_CONTEXT = {
-    0: 1.00,   # resting (lying in bed) — baseline, no discount
-    1: 0.40,   # eating — slight HR/BP increase expected
-    2: 0.50,   # walking/ambulating — elevated vitals expected
-    3: 1.25,   # distressed — amplify concern
-    4: 1.60,   # falling — immediate concern
+    0: 1.00,  # resting (lying in bed) — baseline, no discount
+    1: 0.40,  # eating — slight HR/BP increase expected
+    2: 0.50,  # walking/ambulating — elevated vitals expected
+    3: 1.25,  # distressed — amplify concern
+    4: 1.60,  # falling — immediate concern
 }
 
 # Alarm fatigue settings
-FATIGUE_WINDOW = 30          # look at last 30 steps
-FATIGUE_THRESHOLD = 5        # more than 5 alerts in the window
-FATIGUE_MULTIPLIER = 0.6     # reduce reward to 60%
+FATIGUE_WINDOW      = 30   # look at last 30 steps
+FATIGUE_THRESHOLD   = 5    # more than 5 alerts in the window
+FATIGUE_MULTIPLIER  = 0.6  # reduce reward to 60%
 
 # Personalization settings
-PERSONALIZATION_STEP = 200   # kicks in after this many steps
+# P0 fix: was 200, which is unreachable in a 60-step episode.
+# Now 20 so the bonus fires from step 21 onward — matching the README description.
+PERSONALIZATION_STEP  = 20   # kicks in after this many steps
 PERSONALIZATION_BONUS = 0.2  # bonus for correctly ignoring known-normal
 
 
 class RewardFunction:
     """
     Stateful reward calculator.
-
     Tracks action history for alarm fatigue and personalization bonuses.
     """
 
     def __init__(self):
-        self.action_history = []
+        self.action_history    = []
         self.condition_history = []
-        self.activity_history = []
-        self.step_count = 0
+        self.activity_history  = []
+        self.step_count        = 0
 
     def reset(self):
         """Clear all history for a new episode."""
-        self.action_history = []
+        self.action_history    = []
         self.condition_history = []
-        self.activity_history = []
-        self.step_count = 0
+        self.activity_history  = []
+        self.step_count        = 0
 
     def compute(self, action: Action, condition: PatientCondition,
                 activity: int = 0) -> float:
@@ -116,7 +117,7 @@ class RewardFunction:
         base_reward = REWARD_TABLE[action][condition]
 
         # 2. Activity context multiplier
-        # Only apply to penalty situations — don't discount correct actions
+        #    Only apply to penalty situations — don't discount correct actions
         ctx = ACTIVITY_CONTEXT.get(activity, 1.0)
         if base_reward < 0:
             # Penalties are reduced during expected-high-vitals activities
@@ -149,16 +150,15 @@ class RewardFunction:
 
     def get_stats(self) -> dict:
         """Return episode statistics for graders."""
-        total_alerts = sum(1 for a in self.action_history if a == Action.ALERT)
+        total_alerts  = sum(1 for a in self.action_history if a == Action.ALERT)
         total_verifies = sum(1 for a in self.action_history if a == Action.VERIFY)
-        total_ignores = sum(1 for a in self.action_history if a == Action.IGNORE)
-
+        total_ignores  = sum(1 for a in self.action_history if a == Action.IGNORE)
         return {
-            "total_steps": self.step_count,
-            "total_alerts": total_alerts,
-            "total_verifies": total_verifies,
-            "total_ignores": total_ignores,
-            "action_history": list(self.action_history),
+            "total_steps":     self.step_count,
+            "total_alerts":    total_alerts,
+            "total_verifies":  total_verifies,
+            "total_ignores":   total_ignores,
+            "action_history":    list(self.action_history),
             "condition_history": list(self.condition_history),
-            "activity_history": list(self.activity_history),
+            "activity_history":  list(self.activity_history),
         }
