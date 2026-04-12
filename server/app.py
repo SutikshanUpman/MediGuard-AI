@@ -1023,9 +1023,12 @@ gradio_app_mounted = gr.mount_gradio_app(app, gradio_app, path="/")
 # Entry point
 # ══════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+def main():
     port = int(os.getenv("PORT", 7860))
     is_hf = os.getenv("SPACE_ID") or os.getenv("HF_SPACE_ID") or os.getenv("SYSTEM_SPACES")
     host  = "0.0.0.0" if is_hf else "127.0.0.1"
     print(f"[STARTUP] MediGuard-AI starting on {host}:{port}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+if __name__ == "__main__":
+    main()
