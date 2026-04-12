@@ -91,7 +91,7 @@ OpenEnv provides a standardised interface (`reset()` → `step()` → `state()`)
 
 The original episode length was 360 steps (simulating 6 real hours at 1-minute resolution). This was reduced to 60 steps for three reasons:
 
-1. **Eval time budget:** The hackathon validator enforces a 20-minute runtime cap for `inference.py`. At 60 steps × 3 tasks × ~4s per LLM call, the worst-case runtime is ~12 minutes — safely within budget. At 360 steps, the same LLM call overhead would run ~72 minutes, a guaranteed timeout.
+1. **Eval time budget:** The hackathon validator enforces a 30-minute runtime cap for `inference.py`. At 60 steps × 3 tasks × ~8s per LLM call, the worst-case runtime is ~24 minutes — safely within budget. At 360 steps, the same LLM call overhead would run ~144 minutes, a guaranteed timeout.
 
 2. **Signal density:** The key clinical events (hypertensive crisis, sepsis onset, triage urgency ranking) all occur within the first 60 steps at the adjusted simulation rate. Extending to 360 only adds stable baseline steps that add noise without clinical information.
 
@@ -248,7 +248,7 @@ print(f"Score: {env.triage_grader():.4f}")
 
 ## Authors
 
-**Sutikshan Upman** · **Rajveer Gupta** . **Abdul Malik**
+**Sutikshan Upman** · **Rajveer Gupta** · **Abdul Malik**
 
 Built for the Meta PyTorch × Scaler OpenEnv Hackathon 2026.
 
